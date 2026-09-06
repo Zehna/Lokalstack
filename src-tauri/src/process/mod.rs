@@ -72,6 +72,7 @@ pub(crate) fn run_discovery_cycle(
     previous_cache: &sampler::SampleCache,
     project_cache: &mut crate::project::ProjectCache,
     bypass_project_cache: bool,
+    control_registry: &crate::control::ControlTargetRegistry,
 ) -> Result<DiscoveryCycle, String> {
     #[cfg(windows)]
     {
@@ -115,6 +116,7 @@ pub(crate) fn run_discovery_cycle(
             services,
             projects: Vec::new(),
             projectLinks: Vec::new(),
+            controls: Vec::new(),
         };
 
         // Phase 4: resolve projects from process evidence, content-addressed
@@ -124,9 +126,67 @@ pub(crate) fn run_discovery_cycle(
             project_cache,
             bypass_project_cache,
         );
+
+        // Phase 5: derive per-PID control capabilities (stop/open) and
+        // refresh the opaque control-target registry from this snapshot.
+        // replace_all first: old ids stop resolving the moment a fresh
+        // snapshot exists (stale targets cannot survive a refresh), then
+        // each controllable process registers its trusted target.
+        let service_by_pid: std::collections::HashMap<u32, &crate::intelligence::ServiceIdentity> =
+            response.services.iter().map(|s| (s.pid, &s.identity)).collect();
+        let project_by_pid: std::collections::HashMap<u32, &crate::project::ProjectIdentity> =
+            project_links
+                .iter()
+                .filter_map(|link| {
+                    projects
+                        .iter()
+                        .find(|p| p.id == link.projectId)
+                        .map(|project| (link.pid, project))
+                })
+                .collect();
+        // Build the target list first so each controllable process gets
+        // exactly one backend-trusted snapshot carrying its backend-derived
+        // evidence hints (service category, dev-evidence flag). These hints
+        // are the ONLY input the action-time chain uses for the evidence
+        // gate — and they never come from the frontend.
+        let trusted_targets: Vec<crate::control::TrustedControlTarget> = response
+            .processes
+            .iter()
+            .filter(|process| {
+                crate::control::evaluate_capability(
+                    process,
+                    service_by_pid.get(&process.pid).copied(),
+                    project_by_pid.get(&process.pid).copied(),
+                )
+                .canStop
+            })
+            .map(|process| {
+                crate::control::trusted_target_of(
+                    process,
+                    service_by_pid.get(&process.pid).copied(),
+                    true,
+                )
+            })
+            .collect();
+        control_registry.replace_all(trusted_targets);
+        let controls: Vec<crate::control::PidControl> = response
+            .processes
+            .iter()
+            .map(|process| {
+                crate::control::control_for_process(
+                    process,
+                    service_by_pid.get(&process.pid).copied(),
+                    project_by_pid.get(&process.pid).copied(),
+                    &response.listeners,
+                    control_registry,
+                )
+            })
+            .collect();
+
         let response = crate::discovery::PortListenersResponse {
             projects,
             projectLinks: project_links,
+            controls,
             ..response
         };
 
@@ -138,7 +198,7 @@ pub(crate) fn run_discovery_cycle(
 
     #[cfg(not(windows))]
     {
-        let _ = (previous_cache, project_cache, bypass_project_cache);
+        let _ = (previous_cache, project_cache, bypass_project_cache, control_registry);
         Err("Port and process discovery are Windows-only in Phase 2.".to_string())
     }
 }
@@ -170,20 +230,23 @@ pub(crate) fn build_next_cache(cycle: &DiscoveryCycle) -> sampler::SampleCache {
 }
 
 /// Read-only Tauri command: full snapshot of TCP listeners, their owning
-/// processes, service identities, and resolved projects in one payload, so a
-/// refresh cycle samples every PID exactly once and resolves each project
-/// once. Frontend contract: `{ listeners, processes, services, projects,
-/// projectLinks, capturedAt, durationMs }`; rejects with a human-readable
-/// error string. `bypassProjectCache` (manual refresh) re-reads project
-/// metadata from the filesystem.
+/// processes, service identities, resolved projects, and control
+/// capabilities in one payload, so a refresh cycle samples every PID exactly
+/// once and resolves each project once. Frontend contract: `{ listeners,
+/// processes, services, projects, projectLinks, controls, capturedAt,
+/// durationMs }`; rejects with a human-readable error string.
+/// `bypassProjectCache` (manual refresh) re-reads project metadata from the
+/// filesystem.
 #[tauri::command]
 pub(crate) async fn get_port_listeners(
     state: tauri::State<'_, ProcessEngineState>,
     projects: tauri::State<'_, crate::project::ProjectEngineState>,
+    control: tauri::State<'_, crate::control::ControlEngineState>,
     bypass_project_cache: Option<bool>,
 ) -> Result<crate::discovery::PortListenersResponse, String> {
     let cache = Arc::clone(&state.cache);
     let project_cache = Arc::clone(&projects.cache);
+    let control_registry = Arc::clone(&control.registry);
     tauri::async_runtime::spawn_blocking(move || {
         let bypass = bypass_project_cache.unwrap_or(false);
         let mut previous = cache
@@ -192,12 +255,126 @@ pub(crate) async fn get_port_listeners(
         let mut project_cache = project_cache
             .lock()
             .map_err(|_| "project engine cache lock poisoned".to_string())?;
-        let cycle = run_discovery_cycle(&previous, &mut project_cache, bypass)?;
+        let cycle = run_discovery_cycle(&previous, &mut project_cache, bypass, &control_registry)?;
         *previous = build_next_cache(&cycle);
         Ok(cycle.response)
     })
     .await
     .map_err(|e| format!("discovery task join error: {e}"))?
+}
+
+/// Control command: **End Process** — the user-confirmed termination of an
+/// eligible development process.
+///
+/// This is the only stop path for externally discovered processes: they were
+/// not launched into a LocalStack-managed process group, so there is no
+/// targeted graceful signal (a console CTRL_BREAK with group id 0 would be a
+/// broadcast — never used). The command takes **only the opaque target id**
+/// issued by the backend; the authorization chain (registry lookup →
+/// re-inspection → identity validation → policy recomputation) runs here on
+/// the native side before `TerminateProcess`.
+#[tauri::command]
+pub(crate) async fn end_process(
+    state: tauri::State<'_, crate::control::ControlEngineState>,
+    target_id: String,
+) -> Result<crate::control::StopResult, String> {
+    #[cfg(windows)]
+    {
+        let registry = Arc::clone(&state.registry);
+        tauri::async_runtime::spawn_blocking(move || {
+            // Full authorization chain — no PID is trusted from the request.
+            let trusted = crate::control::authorize_action(&registry, &target_id)?;
+
+            // The user explicitly confirmed this termination in the UI; the
+            // copy never claims a graceful stop (gracefulStopSupported is
+            // false for externally discovered processes).
+            let ok = crate::control::windows::terminate(trusted.pid);
+            let gone = crate::control::windows::wait_for_exit(
+                trusted.pid,
+                std::time::Duration::from_millis(crate::control::windows::TERMINATION_WAIT_MS),
+            );
+            let stopped = ok && gone;
+
+            let message = if stopped {
+                format!(
+                    "Ended {} (PID {}) — process terminated.",
+                    trusted.display_name, trusted.pid
+                )
+            } else if ok {
+                format!(
+                    "Termination was issued for {} (PID {}) but exit has not been observed yet.",
+                    trusted.display_name, trusted.pid
+                )
+            } else {
+                format!(
+                    "Windows refused termination of {} (PID {}) — the process may be protected.",
+                    trusted.display_name, trusted.pid
+                )
+            };
+
+            Ok(crate::control::StopResult {
+                stopped,
+                gracefulAttempted: false,
+                stillRunning: !stopped,
+                message,
+            })
+        })
+        .await
+        .map_err(|e| format!("control task join error: {e}"))?
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (state, target_id);
+        Err("Service control is Windows-only.".to_string())
+    }
+}
+
+/// Control command: open a localhost URL in the user's default browser.
+/// The URL must come from the snapshot's `controls[].urls` — the command
+/// accepts only http(s) localhost/127.0.0.1/[::1] URLs and re-checks that
+/// the owning process (when given) still exists, so a dead service's URL is
+/// not opened blindly.
+#[tauri::command]
+pub(crate) async fn open_service_url(
+    url: String,
+    pid: Option<u32>,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // 1. URL sanity: only plain http URLs to localhost hosts, no query,
+        //    credentials, or paths with surprises.
+        let lowered = url.to_lowercase();
+        let host_allowed = lowered.starts_with("http://localhost:")
+            || lowered.starts_with("http://127.0.0.1:")
+            || lowered.starts_with("http://[::1]:");
+        if !host_allowed
+            || url.contains('?')
+            || url.contains('#')
+            || url.contains('@')
+            || url.contains(' ')
+        {
+            return Err(format!("Refusing to open non-localhost URL: {url}"));
+        }
+
+        // 2. Optional liveness check of the owning PID.
+        if let Some(pid) = pid {
+            if !crate::control::windows::is_running(pid) {
+                return Err("This service is no longer running — refresh and try again.".to_string());
+            }
+        }
+
+        let url_owned = url.clone();
+        tauri::async_runtime::spawn_blocking(move || crate::control::windows::open_url(&url_owned))
+            .await
+            .map_err(|e| format!("control task join error: {e}"))?
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (url, pid);
+        Err("Opening URLs is Windows-only.".to_string())
+    }
 }
 
 #[cfg(test)]
@@ -219,8 +396,7 @@ mod tests {
                 creation_ticks: 999,
                 wall_ms: 5_000,
             },
-        );
-        let cycle = DiscoveryCycle {
+        );            let cycle = DiscoveryCycle {
             response: crate::discovery::PortListenersResponse {
                 capturedAt: 5_000,
                 durationMs: 1,
@@ -229,6 +405,7 @@ mod tests {
                 services: Vec::new(),
                 projects: Vec::new(),
                 projectLinks: Vec::new(),
+                controls: Vec::new(),
             },
             raw_samples,
         };

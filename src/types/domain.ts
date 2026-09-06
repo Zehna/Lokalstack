@@ -208,6 +208,65 @@ export interface PidProjectLink {
   projectId: string
 }
 
+/**
+ * The backend-issued control target. The frontend receives only the opaque
+ * `id` plus display fields — every policy-bearing fact (PID, creation time,
+ * service/project classification) lives server-side in the target registry
+ * and is recomputed at action time. The frontend cannot construct, forge,
+ * or enrich one: the id is a 256-bit hash the backend resolves itself.
+ */
+export interface ControlTarget {
+  /** Opaque, unpredictable registry id. The only value sent to authorize. */
+  id: string
+  /** Display name for confirmations (advisory; backend re-derives). */
+  displayName: string
+  /** Executable basename (advisory). */
+  processName: string | null
+}
+
+/** What the user may do with a process, and why not when they may not. */
+export interface ControlCapability {
+  /** A browser-friendly localhost URL exists for the process's listeners. */
+  canOpen: boolean
+  /** The process is a controllable development process (End Process
+   * available after explicit confirmation). */
+  canStop: boolean
+  /** Whether a *targeted* graceful stop exists. Always false in Phase 5:
+   * externally discovered processes were not launched into a
+   * LocalStack-managed process group, and a console-wide CTRL_BREAK
+   * broadcast is never used. */
+  gracefulStopSupported: boolean
+  /** Why `gracefulStopSupported` is what it is. */
+  gracefulStopReason: string
+  /** Always false in Phase 5 — restart is deferred (documented decision). */
+  canRestart: boolean
+  /** When `canStop` is false, the honest reason. */
+  reason: string
+}
+
+/** A PID's control surface from the discovery snapshot. */
+export interface PidControl {
+  pid: number
+  capability: ControlCapability
+  /** Browser-friendly URLs (localhost forms only), deduplicated. */
+  urls: string[]
+  /** Opaque target to echo back for stop actions (controllable PIDs only). */
+  target: ControlTarget | null
+}
+
+/** Outcome of a stop action, reported honestly. */
+export interface StopResult {
+  /** The process is gone. */
+  stopped: boolean
+  /** A *targeted* graceful method existed and was used — always false for
+   * externally discovered processes. */
+  gracefulAttempted: boolean
+  /** True when the process was still alive after the operation. */
+  stillRunning: boolean
+  /** Human-readable summary for the history log. */
+  message: string
+}
+
 /** Response of the `get_port_listeners` Tauri command. */
 export interface PortListenersResponse {
   listeners: PortListener[]
@@ -219,6 +278,8 @@ export interface PortListenersResponse {
   projects: ProjectIdentity[]
   /** PID → project id; many PIDs may share one project. */
   projectLinks: PidProjectLink[]
+  /** Control capability + browser URLs per PID (Phase 5). */
+  controls: PidControl[]
   /** Unix epoch milliseconds at which the snapshot was taken. */
   lastUpdated: number
   /** Wall-clock duration of the native discovery cycle, in milliseconds. */

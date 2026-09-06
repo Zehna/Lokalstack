@@ -22,8 +22,8 @@ between layers sit.
 │  @tauri-apps/api invoke() ⇄ #[tauri::command] fns       │
 ├─────────────────────────────────────────────────────────┤
 │          Rust feature modules (src-tauri/src/*)         │
-│  discovery · process · intelligence · project ·         │
-│  health · control · conflicts · workspace · ai          │
+│  discovery · process · intelligence · project · control │
+│  · health · conflicts · workspace · ai                  │
 ├─────────────────────────────────────────────────────────┤
 │      Native engines (OS APIs, Windows-first)            │
 │  TCP table + process enumeration, filesystem, ...       │
@@ -86,15 +86,22 @@ searching for `invoke(` finds exactly one directory.
   explicitly declared in `src-tauri/capabilities/`.
 - The boundary is also the **safety boundary**: no command may kill processes,
   mutate environment variables, touch firewall rules, reach remote machines, or
-  require elevation. Anything beyond read-only localhost inspection needs an
-  explicit, user-confirmed design decision in a later phase.
+  require elevation — with exactly one, narrow, user-confirmed exception
+  introduced in Phase 5: ending a *revalidated, eligibility-checked,
+  user-owned development process* (`end_process`, authorized by an opaque
+  backend-issued target id). System processes, databases, infrastructure,
+  and unverifiable identities are refused by construction, the denylist is
+  recomputed on fresh data at action time, and identity is revalidated at
+  click time. Everything else in this boundary remains read-only.
 
 ### 4.1 Registered commands
 
 | Command              | Returns                                        | Phase |
 |----------------------|------------------------------------------------|-------|
 | `greet`              | sample string (boundary smoke test)            | 0     |
-| `get_port_listeners` | `PortListenersResponse` — listeners + process intelligence + service identities + project resolution, read-only | 1–4  |
+| `get_port_listeners` | `PortListenersResponse` — listeners + process intelligence + service identities + project resolution + control capabilities | 1–5  |
+| `end_process` | user-confirmed End Process of an opaque revalidated control target (denylist recomputed at action time) | 5 |
+| `open_service_url` | open a snapshot-derived localhost URL in the default browser | 5 |
 
 ## 5. Rust feature modules
 
@@ -260,6 +267,91 @@ stay honest (Node.js, Python — confidence `exact` for the runtime, not the
 framework), unknown executables keep their real name with `low`, and
 inaccessible processes render `Unavailable` while keeping port + PID.
 
+### 5.6 Safe service control engine (implemented, Phase 5)
+
+```
+control/
+├── mod.rs      facade: ControlTarget / ControlCapability / PidControl /
+│               StopResult DTOs, per-cycle capability derivation, the
+│               authorization chain (authorize_action), tests incl. the
+│               source-level no-broadcast guard and the live end-process test
+├── registry.rs opaque control-target registry — the native trust boundary:
+│               BLAKE3-derived unpredictable ids, bounded capacity,
+│               TTL expiry, refresh-time wholesale replacement
+├── rules.rs    pure eligibility (denylist + development evidence) and
+│               browsable-URL mapping, fully unit-tested
+└── windows.rs  narrow unsafe FFI: revalidation probe, liveness, bounded
+                wait, TerminateProcess, ShellExecuteW — all RAII-guarded.
+                **No console control events, ever.**
+```
+
+**The safety model — the product's first write capability.**
+
+- **The frontend cannot name a process.** Control commands accept only an
+  **opaque target id** issued by the backend during discovery. IDs are
+  BLAKE3-256 over (PID, creation time, per-boot random key) — unpredictable
+  and unusable for any other PID. The `ControlTargetRegistry` is the trust
+  boundary: bounded (1024 entries), TTL-expiring (15 min), and replaced
+  wholesale on every refresh cycle so stale ids stop resolving the moment
+  fresher data exists. Policy-bearing fields (PID, creation time, service
+  category, project, canStop) are **never accepted from the frontend**.
+- **Every action runs the full authorization chain server-side**
+  (`authorize_action`): ① resolve the opaque id (unknown/expired →
+  `UNKNOWN_TARGET` refusal) → ② re-inspect the live process right now
+  (`revalidate`) → ③ validate identity: creation time (PID-reuse proof) +
+  executable path, case-insensitive; mismatch → `STALE_TARGET`, unverifiable
+  → `IDENTITY_UNVERIFIABLE` → ④ **recompute the denylist on the fresh data**
+  (`denylist_refusal`: reserved PIDs 0/4, system process names, Windows
+  directory, databases, infrastructure) → ⑤ require the backend-stored
+  development-evidence hint → only then `TerminateProcess`.
+- **Backend-stored evidence hints, never frontend hints.** The trusted
+  target carries only what the backend itself derived at issuance (service
+  category, dev-evidence flag). These hints can *tighten* a refusal
+  (infrastructure category) or satisfy the evidence gate — they can never
+  loosen a hard deny rule, which always re-runs on fresh process data.
+- **Conservative eligibility (`rules.rs`, pure + unit-tested).** Refusal
+  priority at issuance: reserved PIDs (0, 4) → inaccessible process → no
+  creation time → Windows system process list (System, smss, csrss,
+  wininit, winlogon, services, lsass, svchost, dwm, explorer, conhost, …)
+  → anything under the Windows directory (`SystemRoot`) → database engines
+  (postgres, mysqld, mariadbd, redis-server, mongod, sqlservr) →
+  infrastructure category (Docker) → finally *require development
+  evidence*: a classified service identity or a confirmed project
+  association. Unclassified unknown executables are refused with a reason.
+  The reason is always shown in the UI tooltip.
+- **No graceful console-stop for externally discovered processes.** An
+  earlier design used `AttachConsole(pid)` +
+  `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0)` — that is a **broadcast**:
+  group id 0 reaches every process sharing the attached console, and a PID
+  is not a process-group id. It has been removed entirely (a source-level
+  regression test greps the crate's code — comments and strings stripped —
+  and fails if `GenerateConsoleCtrlEvent`, `AttachConsole`, or
+  `CTRL_BREAK_EVENT` ever return). Honest semantics instead:
+  `gracefulStopSupported: false` with reason "Process was not launched in
+  a LocalStack-managed process group", and the user-facing action is
+  **End Process** — explicit, confirmed, terminating.
+- **End Process (the only stop path in Phase 5).** One explicit,
+  two-click-confirmed action that runs the authorization chain and then
+  terminates exactly the selected process (`TerminateProcess`, PID-scoped,
+  RAII-guarded handle), followed by a bounded 3 s wait and an honest
+  `stopped / stillRunning` report. There is no automatic escalation and no
+  staged "graceful-then-force" dance — nothing fake is attempted first.
+- **Phase 6 contract (documented, not implemented).** When LocalStack
+  itself launches a workspace process — `CREATE_NEW_PROCESS_GROUP`, with
+  LocalStack retaining the process-group identity — a *targeted*
+  `CTRL_BREAK` to that **known group id** can restore genuine graceful
+  stops for managed processes. Externally discovered processes will never
+  regain one.
+- **Open.** `ShellExecuteW` with the `open` verb (respects the default
+  browser). URLs are derived only from localhost bind forms — `127.0.0.1`,
+  `[::1]`, and wildcards `0.0.0.0`/`::` mapped to `localhost`; specific
+  non-loopback addresses get no URL. The command re-checks URL shape
+  (http-only, no query/credentials) and, when a PID is supplied, that the
+  process still exists.
+- **No process trees.** Exactly the selected process is stopped; parents
+  and unrelated children are never touched (documented Phase 5 limitation;
+  framework-proven parent/child relations would need their own design).
+
 ### 5.5 Project intelligence engine (implemented, Phase 4)
 
 ```
@@ -379,10 +471,16 @@ React ◄─ stores/portsStore (listeners · processByPid · serviceByPid · pro
   only, always.
 - No privileged operations. If a future feature seems to need elevation, the
   feature gets redesigned, not the permission model.
-- No process modification without an explicit, user-confirmed action in the UI
-  (Phase 5 will define that UX; nothing exists today).
+- Process control exists only through the Phase 5 safety model: opaque
+  revalidated targets, conservative eligibility, graceful-first stop, and a
+  second confirmation before force. No PID-typed input from the frontend is
+  ever accepted, no process tree is ever killed, and no system/database/
+  infrastructure process is ever controllable.
+- No restart in Phase 5 — restarting reliably requires orchestration
+  (working directory, environment, stdout/stderr ownership) that belongs to
+  Phase 6 workspaces; `canRestart` is `false` everywhere by design.
 
-## Known limitations (Phase 2–4)
+## Known limitations (Phase 2–5)
 
 - Windows-only. Other platforms get an explicit error, not silent emptiness.
 - TCP only — UDP discovery would be a separate, explicit design.
@@ -419,6 +517,16 @@ React ◄─ stores/portsStore (listeners · processByPid · serviceByPid · pro
 - A process mapping to no project is the honest outcome, not an error:
   `npm-cache/_npx` caches resolve (they have real package.json files) but
   render as opaque cache directories with their hash names.
+- Control actions accept only backend-issued **opaque target ids** — no PID,
+  creation time, or metadata crosses the Tauri boundary from the frontend;
+  the registry is the native trust boundary (see §5.6).
+- There is no generic targeted graceful console-stop for externally
+  discovered processes (a console-wide `CTRL_BREAK` broadcast would affect
+  unrelated processes and is never used); the honest action is a confirmed
+  **End Process**. A future managed process group (Phase 6) may support a
+  targeted signal.
+- Stop targets exactly one process; children spawned by the dev server are
+  intentionally not touched (Phase 5 has no proven parent/child model).
 
 ## See also
 

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { ArrowUpDown, Search } from 'lucide-react'
 
 import { RefreshButton } from '@/app/components/RefreshButton'
+import { ControlActions } from '@/app/components/ControlActions'
 import { usePortListeners } from '@/hooks'
 import { usePortsStore } from '@/stores/portsStore'
 import type { PortListener, ProcessInfo, ProjectIdentity, ServiceIdentity } from '@/types/domain'
@@ -52,6 +53,7 @@ export function PortsPage() {
   const processByPid = usePortsStore((state) => state.processByPid)
   const serviceByPid = usePortsStore((state) => state.serviceByPid)
   const projectByPid = usePortsStore((state) => state.projectByPid)
+  const controlByPid = usePortsStore((state) => state.controlByPid)
   const loading = usePortsStore((state) => state.loading)
   const refreshing = usePortsStore((state) => state.refreshing)
   const error = usePortsStore((state) => state.error)
@@ -172,6 +174,7 @@ export function PortsPage() {
                 <th scope="col" className="px-4 py-2.5 font-medium">Bind Address</th>
                 <th scope="col" className="px-4 py-2.5 font-medium">IP</th>
                 <th scope="col" className="px-4 py-2.5 font-medium">State</th>
+                <th scope="col" className="px-4 py-2.5 font-medium">Controls</th>
               </tr>
             </thead>
             <tbody>
@@ -241,6 +244,15 @@ export function PortsPage() {
                       <span className="rounded border border-emerald-900/60 bg-emerald-950/40 px-1.5 py-0.5 text-xs text-emerald-400">
                         {listener.state}
                       </span>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {controlByPid.get(listener.pid) !== undefined && (
+                        <ControlActions
+                          control={controlByPid.get(listener.pid)!}
+                          compact
+                          onStopped={() => void refreshListeners()}
+                        />
+                      )}
                     </td>
                   </tr>
                 )

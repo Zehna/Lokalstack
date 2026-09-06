@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 
 import { RefreshButton } from '@/app/components/RefreshButton'
+import { ControlActions } from '@/app/components/ControlActions'
 import { usePortListeners } from '@/hooks'
 import { usePortsStore } from '@/stores/portsStore'
 import type { ServiceCategory } from '@/types/domain'
@@ -48,6 +49,7 @@ export function ServicesPage() {
   const [expandedPid, setExpandedPid] = useState<number | null>(null)
 
   const projectByPid = usePortsStore((state) => state.projectByPid)
+  const controlByPid = usePortsStore((state) => state.controlByPid)
 
   const groups = useMemo(
     () =>
@@ -187,6 +189,26 @@ export function ServicesPage() {
                   <span className="flex-1 truncate font-mono text-xs text-slate-500">
                     {group.ports.length > 0 ? `Ports ${group.ports.join(', ')}` : 'No ports'}
                   </span>
+
+                  <ControlActions
+                    control={
+                      controlByPid.get(group.pid) ?? {
+                        pid: group.pid,
+                        capability: {
+                          canOpen: false,
+                          canStop: false,
+                          gracefulStopSupported: false,
+                          gracefulStopReason:
+                            'Process was not launched in a LocalStack-managed process group.',
+                          canRestart: false,
+                          reason: 'Control data not in the current snapshot — refresh.',
+                        },
+                        urls: [],
+                        target: null,
+                      }
+                    }
+                    onStopped={() => void refreshListeners()}
+                  />
 
                   <span
                     className="font-mono text-xs text-slate-400"

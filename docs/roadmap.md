@@ -257,14 +257,100 @@ inference reports the observed command line (no ecosystem equivalent of
 `npm run`); `.git` file worktrees are supported for branch reading, but
 `gitdir`-relative edge cases beyond the documented layout are untested.
 
-## Phase 5 — Service Control
+## Phase 5 — Service Control ✅
 
-**Goal:** act, carefully.
+**Goal:** act, carefully — the first write capability.
 
-- Explicit, user-confirmed start/stop/restart of user-owned dev processes.
-- Every action requires confirmation in the UI and is recorded in history.
-- The safety boundary in `docs/architecture.md` still applies: no system
-  services, no elevation, no environment mutation.
+**Implemented:**
+
+- New `src-tauri/src/control/` engine, hardened after a pre-commit safety
+  audit: `mod.rs` (DTOs, per-cycle capability derivation, the full
+  authorization chain, a source-level no-broadcast guard, the live
+  end-process test) · `registry.rs` (**opaque control-target registry** —
+  the native trust boundary) · `rules.rs` (pure denylist + development
+  evidence + URL mapping) · `windows.rs` (narrow unsafe FFI: revalidation
+  probe, liveness, bounded wait, TerminateProcess, ShellExecuteW —
+  RAII-guarded; **no console control events, ever**).
+- **The frontend cannot name a process.** A pre-commit audit rejected the
+  original stop command that accepted PID + creation time + metadata from
+  the frontend (forgeable) — and rejected the graceful-stop approach of
+  `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0)` after
+  `AttachConsole(pid)`: group id 0 is a **console-wide broadcast** (every
+  process sharing the attached console receives it; PID ≠ process-group
+  id). Both are gone. Commands now accept only an **opaque target id**
+  (BLAKE3-256 over PID ‖ creation time ‖ per-boot key — unpredictable,
+  64-hex) issued server-side during discovery. The registry is bounded
+  (1024), TTL-expiring (15 min), and replaced wholesale each refresh so
+  stale ids stop resolving immediately.
+- **Authorization chain at action time** (server-side, before any write
+  primitive): resolve opaque id → re-inspect the live process → validate
+  creation time + executable path (PID-reuse proof; mismatch →
+  `STALE_TARGET`, unverifiable → `IDENTITY_UNVERIFIABLE`) → **recompute the
+  denylist on fresh data** (reserved PIDs 0/4, system names, Windows
+  directory, databases, infrastructure) → require the backend-stored
+  development-evidence hint. Frontend-supplied service/project/name/canStop
+  fields do not exist in the protocol; backend hints can tighten a refusal,
+  never loosen one. Verified live: forged/unknown ids refused with the
+  process untouched.
+- **Conservative eligibility:** hard-refused list (System, smss, csrss,
+  wininit, winlogon, services, lsass, svchost, dwm, explorer, conhost, …),
+  anything under the Windows directory, database engines (postgres, mysqld,
+  mariadbd, redis-server, mongod, sqlservr), infrastructure category,
+  reserved PIDs, and every unverifiable identity. Controllable only with
+  development evidence: a classified service identity or a confirmed
+  project association. The honest refusal reason is always shown.
+- **Honest stop semantics:** externally discovered processes were not
+  launched into a LocalStack-managed process group, so
+  `gracefulStopSupported` is `false` ("Process was not launched in a
+  LocalStack-managed process group") and the UI action is **End Process** —
+  never labeled "graceful", never auto-escalated, always explicitly
+  confirmed. Unavailable graceful control is represented honestly rather
+  than faked with a broadcast.
+- **Phase 6 contract:** LocalStack-launched workspace processes
+  (`CREATE_NEW_PROCESS_GROUP`, group identity retained) may regain a
+  *targeted* `CTRL_BREAK` against their known group id — a genuinely scoped
+  graceful stop. Externally discovered processes never will.
+- **Open:** snapshot-derived localhost URLs only (127.0.0.1, [::1],
+  wildcards → localhost), opened via ShellExecuteW (default browser), with
+  URL-shape checks and optional PID liveness check in the command.
+- **No process trees:** exactly the selected process is stopped.
+- Commands: `end_process` (opaque target id), `open_service_url`;
+  `get_port_listeners` carries per-PID `controls[]` (capabilities + URLs +
+  opaque target ids).
+- Frontend: `ControlActions` (Open + End Process with two-click
+  `ConfirmButton`; copy states the process will be terminated — no fake
+  "graceful" labeling) on Services and Ports rows; refusal reasons as
+  tooltips; `controlStore` (single in-flight action, honest session history
+  incl. stale/unknown-target refusals); the History page is now the real
+  action audit trail. Restart is deliberately **not** implemented:
+  `canRestart` is `false` everywhere — reliable restart needs working
+  directory, environment
+  and stream ownership, which belongs to Phase 6 workspaces.
+
+**Verification (all passed):**
+
+- 173 Rust tests, including the hardened control suite: opaque registry
+  (unpredictable ids, bounded capacity, TTL expiry, refresh replacement,
+  structured unknown/expired refusals), authorization chain (unknown id,
+  expired id, refreshed-over id, forged-id, forged-metadata,
+  reserved-PID-0/4, system-process, stale identity, changed-executable),
+  URL mapping, capability/URL combination, and a **source-level guard**
+  that fails the build if `GenerateConsoleCtrlEvent`, `AttachConsole`, or
+  `CTRL_BREAK_EVENT` ever reappear in crate code.
+- Live end-to-end (`cargo test -- --ignored --nocapture live_end_process`)
+  against a **disposable child process** started by the test itself (with
+  a leak-guard so even a failing assertion cannot orphan it): child
+  discovered → opaque id issued → forged/unknown id refused, child
+  untouched → valid id passed the full chain → explicit End Process
+  terminated it → exit observed. **No console control events used.**
+- `npm run typecheck`, `npm run build`, `cargo check`, `cargo test` all
+  green; desktop app launched with control buttons live.
+
+**Known limitations:** console-event grace only reaches shared-console
+processes (detached-console servers need the confirmed force path); child
+processes of a stopped dev server are intentionally not managed; stop is
+the only lifecycle action — start/restart wait for Phase 6 orchestration;
+history is in-memory per session (persistence belongs to Phase 10).
 
 ## Phase 6 — Workspaces
 

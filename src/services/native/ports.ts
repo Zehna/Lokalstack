@@ -9,7 +9,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 
-import type { PortListenersResponse } from '@/types/domain'
+import type { PortListenersResponse, StopResult } from '@/types/domain'
 
 /** Shape returned by the Rust `get_port_listeners` command. */
 interface RawPortListenersResponse {
@@ -18,6 +18,7 @@ interface RawPortListenersResponse {
   services: PortListenersResponse['services']
   projects: PortListenersResponse['projects']
   projectLinks: PortListenersResponse['projectLinks']
+  controls: PortListenersResponse['controls']
   /** Unix epoch milliseconds at which the backend captured the snapshot. */
   capturedAt: number
   /** Wall-clock duration of the native cycle, in milliseconds. */
@@ -47,7 +48,27 @@ export async function getPortListeners(bypassProjectCache = false): Promise<Port
     services: raw.services,
     projects: raw.projects,
     projectLinks: raw.projectLinks,
+    controls: raw.controls,
     lastUpdated: raw.capturedAt,
     durationMs: raw.durationMs,
   }
+}
+
+/**
+ * End the process behind an opaque target id (user-confirmed termination).
+ * The backend resolves the id in its own registry, re-inspects the process,
+ * revalidates identity, and recomputes eligibility before acting — the
+ * frontend supplies no PID and no policy fields.
+ */
+export async function endProcess(targetId: string): Promise<StopResult> {
+  return invoke<StopResult>('end_process', { targetId })
+}
+
+/**
+ * Open a localhost URL (from the snapshot's `controls[].urls`) in the
+ * user's default browser. The backend re-checks URL safety and, when a PID
+ * is given, that the process still exists.
+ */
+export async function openServiceUrl(url: string, pid: number | null): Promise<void> {
+  return invoke<void>('open_service_url', { url, pid })
 }

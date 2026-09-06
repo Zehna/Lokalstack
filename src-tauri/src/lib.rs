@@ -1,12 +1,14 @@
 //! Rust backend for LocalStack Control Center.
 //!
-//! Phase 2 adds process intelligence on top of Phase 1's port discovery:
-//! the `get_port_listeners` Tauri command now returns TCP listeners **and**
-//! their owning processes' metadata (name, executable path, start time,
-//! working-set memory, delta-sampled CPU percentage). The pipeline lives in
-//! `src/process/` (sampling + FFI) on top of `src/discovery/` (TCP tables).
-//! Later engines (health, control, conflicts, workspaces, AI) remain
-//! placeholders in their feature modules.
+//! Phase 5 (hardened) adds safe local service control on top of the
+//! read-only engines: `end_process` acts only on **opaque control-target
+//! ids** issued by the backend's in-memory registry, with identity
+//! revalidation and policy recomputation at action time. The pipeline lives
+//! in `src/control/` (registry + rules + FFI) on top of `src/process/`
+//! (inspection), `src/discovery/` (TCP tables), `src/intelligence/`
+//! (service identity), and `src/project/` (project identity). The remaining
+//! placeholder modules (`health`, `conflicts`, `workspace`, `ai`) await
+//! later phases.
 
 mod ai;
 mod conflicts;
@@ -29,9 +31,12 @@ pub fn run() {
     tauri::Builder::default()
         .manage(process::ProcessEngineState::default())
         .manage(project::ProjectEngineState::default())
+        .manage(control::ControlEngineState::default())
         .invoke_handler(tauri::generate_handler![
             greet,
-            process::get_port_listeners
+            process::get_port_listeners,
+            process::end_process,
+            process::open_service_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

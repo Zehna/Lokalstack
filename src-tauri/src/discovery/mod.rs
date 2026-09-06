@@ -46,6 +46,8 @@ pub(crate) struct PortListenersResponse {
     pub projects: Vec<crate::project::ProjectIdentity>,
     /// PID → project id (Phase 4). Many PIDs may share one project.
     pub projectLinks: Vec<crate::project::PidProjectLink>,
+    /// Control capability + browser URLs per PID (Phase 5).
+    pub controls: Vec<crate::control::PidControl>,
     /// Unix epoch milliseconds at which the snapshot was taken.
     pub capturedAt: u64,
     /// Wall-clock duration of the full discovery cycle, in milliseconds.
@@ -70,11 +72,12 @@ mod tests {
     fn live_two_cycle_snapshot_is_invariant_valid() {
         let state = crate::process::ProcessEngineState::default();
         let project_state = crate::project::ProjectEngineState::default();
+        let control_state = crate::control::ControlEngineState::default();
         let cache = state.cache.lock().expect("cache lock");
         let mut project_cache = project_state.cache.lock().expect("project cache lock");
 
         // ---- Cycle 1: establishes the CPU baseline ----------------------
-        let cycle1 = crate::process::run_discovery_cycle(&cache, &mut project_cache, false)
+        let cycle1 = crate::process::run_discovery_cycle(&cache, &mut project_cache, false, &control_state.registry)
             .expect("live discovery must not fail on Windows");
         let response = &cycle1.response;
 
@@ -231,7 +234,7 @@ mod tests {
         // ---- Cycle 2: computes real delta CPU percentages ----------------
         std::thread::sleep(std::time::Duration::from_millis(1200));
         let cache = state.cache.lock().expect("cache lock");
-        let cycle2 = crate::process::run_discovery_cycle(&cache, &mut project_cache, false)
+        let cycle2 = crate::process::run_discovery_cycle(&cache, &mut project_cache, false, &control_state.registry)
             .expect("live discovery must not fail on Windows");
         let response2 = &cycle2.response;
 

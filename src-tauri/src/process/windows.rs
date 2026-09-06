@@ -61,7 +61,7 @@ struct RawInspection {
 ///
 /// `CloseHandle` runs exactly once on drop — the guarantee that no inspection
 /// cycle leaks a handle even when a query fails partway through.
-struct ProcessHandle(HANDLE);
+pub(crate) struct ProcessHandle(HANDLE);
 
 impl ProcessHandle {
     /// Take ownership of a handle returned by `OpenProcess`.
@@ -70,11 +70,11 @@ impl ProcessHandle {
     ///
     /// `handle` must be a valid process handle that has not been closed yet;
     /// ownership transfers to the returned guard.
-    unsafe fn own(handle: HANDLE) -> Self {
+    pub(crate) unsafe fn own(handle: HANDLE) -> Self {
         Self(handle)
     }
 
-    fn as_raw(&self) -> HANDLE {
+    pub(crate) fn as_raw(&self) -> HANDLE {
         self.0
     }
 }

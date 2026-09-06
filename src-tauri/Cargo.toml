@@ -19,6 +19,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Control-target registry (Phase 5 hardened): audited BLAKE3 for opaque,
+# unpredictable target ids.
+blake3 = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = [
@@ -36,6 +39,13 @@ windows-sys = { version = "0.60", features = [
   "Wdk_System_Threading",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_Kernel",
+  # Safe service control (Phase 5, hardened): WaitForSingleObject and
+  # ShellExecuteW (gated on WindowsAndMessaging for SHOW_WINDOW_CMD).
+  # Deliberately NO Win32_System_Console: GenerateConsoleCtrlEvent(…, 0)
+  # is a console-wide broadcast and must not be used against externally
+  # discovered processes (see docs/architecture.md).
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]

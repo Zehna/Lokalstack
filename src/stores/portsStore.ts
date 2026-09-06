@@ -1,7 +1,13 @@
 import { create } from 'zustand'
 
 import { getPortListeners } from '@/services/native/ports'
-import type { PortListener, ProcessInfo, ProjectIdentity, ServiceIdentity } from '@/types/domain'
+import type {
+  PidControl,
+  PortListener,
+  ProcessInfo,
+  ProjectIdentity,
+  ServiceIdentity,
+} from '@/types/domain'
 
 /** One in-flight or completed refresh generation. */
 interface PortsState {
@@ -21,6 +27,8 @@ interface PortsState {
   projects: ProjectIdentity[]
   /** PID → project identity. Many PIDs may share one project. */
   projectByPid: ReadonlyMap<number, ProjectIdentity>
+  /** Control capability + browser URLs per PID (Phase 5). */
+  controlByPid: ReadonlyMap<number, PidControl>
   /** Wall-clock duration of the last native cycle, or null. */
   durationMs: number | null
   /** True until the first snapshot (success or failure) arrives. */
@@ -60,6 +68,7 @@ export const usePortsStore = create<PortsState>()((set, get) => {
         processByPid: new Map(response.processes.map((p) => [p.pid, p])),
         serviceByPid: new Map(response.services.map((s) => [s.pid, s])),
         projects: response.projects,
+        controlByPid: new Map(response.controls.map((c) => [c.pid, c])),
         projectByPid: new Map(
           response.projectLinks
             .map((link) => {
@@ -89,6 +98,7 @@ export const usePortsStore = create<PortsState>()((set, get) => {
     serviceByPid: new Map(),
     projects: [],
     projectByPid: new Map(),
+    controlByPid: new Map(),
     durationMs: null,
     loading: true,
     refreshing: false,
