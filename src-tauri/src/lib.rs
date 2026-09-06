@@ -13,6 +13,7 @@ mod conflicts;
 mod control;
 mod discovery;
 mod health;
+mod intelligence;
 mod process;
 mod workspace;
 

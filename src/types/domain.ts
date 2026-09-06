@@ -91,6 +91,11 @@ export interface ProcessInfo {
   /** Working set in bytes (raw domain value; format only in the UI), or `null`. */
   memoryBytes: number | null
   /**
+   * Full command line (read via the PEB walk), or `null` when unreadable —
+   * the primary evidence for framework detection.
+   */
+  commandLine: string | null
+  /**
    * CPU percent over the last sampling window (per-core normalized, 0–100),
    * or `null` on the first observation — no fabricated `0%` before a real
    * delta exists.
@@ -100,11 +105,60 @@ export interface ProcessInfo {
   accessible: boolean
 }
 
+/**
+ * How sure the native detector is about a service identity. Enum (not a
+ * number) on purpose: honest buckets, no fabricated percentages.
+ */
+export type Confidence = 'low' | 'medium' | 'high' | 'exact'
+
+/** Developer-facing category of a detected service. */
+export type ServiceCategory =
+  | 'frontend'
+  | 'backend'
+  | 'database'
+  | 'ai'
+  | 'infrastructure'
+  | 'unknown'
+
+/** One piece of evidence backing a classification (for the details view). */
+export interface Evidence {
+  /** Where it came from: `process_name`, `executable_path`, `command_line`. */
+  source: string
+  /** The matched value (substring or argument that fired the rule). */
+  value: string
+}
+
+/**
+ * Developer-facing identity of one process, classified from evidence by the
+ * native intelligence layer. Never a guess: `confidence` and `evidence`
+ * always accompany the claim, and generic runtimes stay generic ("Node.js",
+ * "Python") when framework evidence is missing.
+ */
+export interface ServiceIdentity {
+  /** Concrete identity kind, e.g. `node_js`, `vite`, `postgres_sql`, `unknown`. */
+  kind: string
+  /** Human-facing display name: `PostgreSQL`, `Vite`, `Node.js`, `node.exe`. */
+  displayName: string
+  /** Category for filtering/grouping. */
+  category: ServiceCategory
+  /** How confident the detector is. */
+  confidence: Confidence
+  /** Evidence that produced this identity, strongest first. */
+  evidence: Evidence[]
+}
+
+/** A `ServiceIdentity` attached to the PID it belongs to. */
+export interface PidServiceIdentity extends ServiceIdentity {
+  pid: number
+}
+
 /** Response of the `get_port_listeners` Tauri command. */
 export interface PortListenersResponse {
   listeners: PortListener[]
   /** Process metadata for every unique PID in the listener list. */
   processes: ProcessInfo[]
+  /** Service identity per PID (PID-based; shared across a PID's ports). */
+  services: PidServiceIdentity[]
   /** Unix epoch milliseconds at which the snapshot was taken. */
   lastUpdated: number
   /** Wall-clock duration of the native discovery cycle, in milliseconds. */

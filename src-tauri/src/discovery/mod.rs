@@ -40,6 +40,8 @@ pub(crate) struct PortListenersResponse {
     pub listeners: Vec<PortListener>,
     /// Process metadata for every unique PID in the listener list.
     pub processes: Vec<crate::process::ProcessInfo>,
+    /// Service/framework identity per PID (Phase 3 intelligence layer).
+    pub services: Vec<crate::intelligence::PidServiceIdentity>,
     /// Unix epoch milliseconds at which the snapshot was taken.
     pub capturedAt: u64,
     /// Wall-clock duration of the full discovery cycle, in milliseconds.
@@ -107,8 +109,12 @@ mod tests {
                     .processes
                     .iter()
                     .find(|p| p.pid == listener.pid);
+                let service = response
+                    .services
+                    .iter()
+                    .find(|s| s.pid == listener.pid);
                 println!(
-                    "PORT1420: engine → {} IPv{} {} PID {} name={:?} path={:?} mem={:?} cpu={:?} accessible={}",
+                    "PORT1420: engine → {} IPv{} {} PID {} name={:?} mem={:?} cpu={:?} accessible={} → service={:?} confidence={:?} evidence={:?} cmdline={}",
                     listener.port,
                     match listener.ipVersion {
                         super::ports::IpVersion::V4 => "4",
@@ -117,13 +123,37 @@ mod tests {
                     listener.localAddress,
                     listener.pid,
                     process.and_then(|p| p.name.as_deref()),
-                    process.and_then(|p| p.executablePath.as_deref()),
                     process.and_then(|p| p.memoryBytes),
                     process.and_then(|p| p.cpuPercent),
                     process.map(|p| p.accessible).unwrap_or(false),
+                    service.map(|s| &s.identity.displayName),
+                    service.map(|s| &s.identity.confidence),
+                    service.map(|s| &s.identity.evidence),
+                    process
+                        .and_then(|p| p.commandLine.as_deref())
+                        .map(|c| {
+                            if c.len() > 160 {
+                                format!("{}…", &c[..160])
+                            } else {
+                                c.to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| "(unreadable)".to_string()),
                 );
             }
             None => println!("PORT1420: not listening at engine snapshot time"),
+        }
+
+        // Classification overview: every process with its identity.
+        for service in response.services.iter().take(30) {
+            let process = response.processes.iter().find(|p| p.pid == service.pid);
+            println!(
+                "SERVICE: PID {:>6}  {:<18} → {:<22} ({:?})",
+                service.pid,
+                process.and_then(|p| p.name.as_deref()).unwrap_or("<inaccessible>"),
+                service.identity.displayName,
+                service.identity.confidence,
+            );
         }
         for p in response.processes.iter().take(60) {
             println!(

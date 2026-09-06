@@ -93,18 +93,19 @@ searching for `invoke(` finds exactly one directory.
 | Command              | Returns                                        | Phase |
 |----------------------|------------------------------------------------|-------|
 | `greet`              | sample string (boundary smoke test)            | 0     |
-| `get_port_listeners` | `PortListenersResponse` — listeners + process intelligence, read-only | 1–2  |
+| `get_port_listeners` | `PortListenersResponse` — listeners + process intelligence + service identities, read-only | 1–3  |
 
 ## 5. Rust feature modules
 
 `src-tauri/src/` mirrors the product's future engines. Each module owns one
 responsibility:
 
-| Module       | Responsibility                                        | Phase |
-|--------------|-------------------------------------------------------|-------|
-| `discovery`  | TCP listener enumeration (`GetExtendedTcpTable`)        | 1    |
-| `process`    | Process intelligence: names, paths, CPU/RAM, start time | 2    |
-| `health`     | Localhost health probes and per-service health state   | 3+    |
+| Module        | Responsibility                                        | Phase |
+|---------------|-------------------------------------------------------|-------|
+| `discovery`   | TCP listener enumeration (`GetExtendedTcpTable`)        | 1    |
+| `process`     | Process intelligence: names, paths, CPU/RAM, start time, command line | 2–3 |
+| `intelligence`| Evidence-based service & framework classification       | 3    |
+| `health`      | Localhost health probes and per-service health state   | 4+    |
 | `workspace`  | Group services into development workspaces             | 6     |
 | `control`    | Explicit, user-confirmed service control actions       | 5     |
 | `conflicts`  | Detect and explain port conflicts                      | 7     |
@@ -193,28 +194,91 @@ Design points:
   `OpenProcess` per cycle; the Services page groups rows by PID purely in
   frontend logic (`groupProcesses.ts`) — no second native pass.
 
-#### 5.3 Refresh behavior
+### 5.4 Service & framework intelligence engine (implemented, Phase 3)
 
-## Data flow (implemented for port + process discovery, Phase 1–2)
+```
+intelligence/
+├── mod.rs     facade: per-PID identity DTO, pure classify step over the
+│              cycle's processes + listeners (no extra Windows calls)
+└── rules.rs   the pure, deterministic, fully unit-tested detector:
+               ServiceIdentity / ServiceKind / ServiceCategory /
+               Confidence / Evidence, rule tables, token matching
+```
+
+Pipeline: `PortListener → ProcessInfo → ProcessEvidence → detect_service →
+ServiceIdentity`. Identity is **PID-based** — all listener rows of one
+process share one identity (`services` array in the response, keyed as
+`serviceByPid` in the frontend).
+
+**Product principle:** never claim a framework or service identity without
+sufficient evidence. "Node.js" beats an incorrect "Next.js". Port numbers
+are never strong evidence — node.exe on :3000 stays Node.js, a Python web
+server on :7860 stays Python/Uvicorn.
+
+**Evidence model.** Every identity carries its evidence:
+`{ source: process_name | executable_path | command_line, value }`.
+Retained in the domain for the Details view; the UI may summarize it.
+
+**Confidence model (enum, not a number):**
+
+- `exact` — the executable itself identifies the service (postgres.exe,
+  mysqld.exe, redis-server.exe, ollama.exe) or the runtime name is certain
+  (node.exe → Node.js even without framework evidence).
+- `high` — strong command-line/path evidence (next dev/start, vite,
+  flask run, manage.py runserver, uvicorn, llama-server.exe, ComfyUI path).
+- `medium` — plausible but not conclusive (fastapi CLI, gradio CLI,
+  open-webui, Docker helper processes).
+- `low` — weak indication (generic unknown executables, inaccessible
+  processes).
+
+**Rule priority:** exact executables → command-line rules scoped to the
+detected runtime family (Node, Python) → path-based AI rules → runtime
+fallbacks (Node.js / Python / Java Process) → generic fallback keeping the
+real executable name (`OneDrive.Sync.Service.exe`, confidence `low`) or
+`Unavailable` for inaccessible PIDs.
+
+**Token matching:** command-line needles match at word-ish boundaries
+(start/end, whitespace, quotes, path separators, `=`/`:`/`,`) — so
+`next` does not fire inside unrelated flags. Detection is case-insensitive
+end to end (Windows paths are); fallback display names preserve the
+original case.
+
+**Command-line retrieval (new in Phase 3).** Command lines are read natively
+and read-only: `NtQueryInformationProcess(ProcessBasicInformation)` →
+remote `PEB` → remote `RTL_USER_PROCESS_PARAMETERS` → UTF-16
+`CommandLine` buffer, copied with `ReadProcessMemory` — the same documented
+mechanism Sysinternals tools use, requiring `PROCESS_VM_READ` on top of
+`PROCESS_QUERY_LIMITED_INFORMATION`. The opener tries the richer rights
+first and **degrades gracefully** to limited-only (command line `null`, all
+other metadata intact) when the target refuses — expected for protected
+system processes. Cross-bitness targets are skipped rather than guessed.
+
+**Fallback behavior.** Every process gets a usable identity: known runtimes
+stay honest (Node.js, Python — confidence `exact` for the runtime, not the
+framework), unknown executables keep their real name with `low`, and
+inaccessible processes render `Unavailable` while keeping port + PID.
+
+## Data flow (implemented for port + process + service discovery, Phase 1–3)
 
 ```
 Rust: discovery/windows.rs (TCP FFI) ──► ports.rs (normalize) ─┐
-                                                               ├─► process/mod.rs (DTO)
-Rust: process/windows.rs (OpenProcess FFI) ──► sampler.rs ─────┘        │
-                                                                        │
-React ◄─ stores/portsStore ◄─ hooks/usePortListeners ◄─ services/native/ports.ts
-                                                                        │
-                                                       invoke('get_port_listeners')
+                                                               ├─► process/mod.rs ──► intelligence (classify) ──► DTO
+Rust: process/windows.rs (OpenProcess + PEB FFI) ──► sampler.rs ┘                 │
+                                                                                  │
+React ◄─ stores/portsStore (listeners · processByPid · serviceByPid) ◄─ hooks/usePortListeners ◄─ services/native/ports.ts
+                                                                                  │
+                                                                 invoke('get_port_listeners')
 ```
 
-### Refresh behavior (Phase 1–2)
+### Refresh behavior (Phase 1–3)
 
 - **Automatic:** while the Dashboard, Ports or Services view is mounted, a
-  full cycle (listeners + process sampling) runs every ~3 seconds
-  (`usePortListeners`). Timers are cleaned up on unmount; the store drops
-  overlapping requests, and the Rust-side cache mutex serializes cycles as
-  defense in depth. A cycle on a typical dev machine takes ~20 ms, so the
-  3 s cadence is comfortably non-overlapping.
+  full cycle (listeners + process sampling + classification) runs every
+  ~3 seconds (`usePortListeners`). Timers are cleaned up on unmount; the
+  store drops overlapping requests, and the Rust-side cache mutex
+  serializes cycles as defense in depth. A cycle on a typical dev machine
+  takes ~11–43 ms even with command-line retrieval, so the 3 s cadence is
+  comfortably non-overlapping.
 - **Manual:** a Refresh button is present on Dashboard, Ports and Services
   and goes through the same store action.
 - **Failure handling:** errors surface in an inline error state; the last
@@ -248,7 +312,16 @@ React ◄─ stores/portsStore ◄─ hooks/usePortListeners ◄─ services/nat
 - The bind address is shown verbatim (including link-local scope ids when the
   OS reports them); zone/scope qualifiers are future polish.
 - IPv6 v4-mapped addresses render in their canonical `::ffff:a.b.c.d` form.
-- Framework/service identities are deliberately not implemented — Phase 3.
+- Command lines are only as good as Windows allows: protected processes
+  (and cross-bitness targets) yield `commandLine: null`, so their framework
+  cannot be detected — they stay generic (svchost.exe → "svchost.exe",
+  node-without-VM_READ → "Node.js").
+- Classification is executable/command-line based; it deliberately does not
+  read package manifests or project folders (Phase 4 scope).
+- Express is only detected from its own CLI; `node server.js` stays Node.js
+  by design. Open WebUI/Gradio need explicit command/path evidence — a mere
+  port (7860) or process name is never enough.
+- No project-directory detection yet — Phase 4.
 
 ## See also
 

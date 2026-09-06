@@ -3,34 +3,46 @@
 //! # Safety and scope boundaries
 //!
 //! - All `unsafe` FFI of the process engine is confined to this module.
-//! - Processes are opened with the **minimum** access right required:
-//!   `PROCESS_QUERY_LIMITED_INFORMATION` (0x0400). That suffices for all
-//!   three queries performed here — `QueryFullProcessImageNameW`,
-//!   `GetProcessTimes`, and `GetProcessMemoryInfo` — so neither
-//!   `PROCESS_QUERY_INFORMATION` nor `PROCESS_VM_READ` is requested.
+//! - Processes are opened with the **minimum** access rights required:
+//!   `PROCESS_QUERY_LIMITED_INFORMATION` (0x0400) suffices for image name,
+//!   times, and memory; command-line retrieval additionally needs
+//!   `PROCESS_VM_READ` (0x0010), so the opener tries that combination first
+//!   and degrades to limited-only when refused (command line becomes
+//!   `None`, everything else stays available).
+//! - Command lines are read via the documented mechanism Sysinternals tools
+//!   use: `NtQueryInformationProcess(ProcessBasicInformation)` → PEB →
+//!   `RTL_USER_PROCESS_PARAMETERS.CommandLine`, copied out with
+//!   `ReadProcessMemory`. Nothing is written to the target process; the
+//!   walk is pure reading of the process's own parameter block.
 //! - Every successfully opened handle is closed exactly once via the RAII
 //!   [`ProcessHandle`] guard; on query failure `OpenProcess` itself cleans
 //!   up (it only "succeeds" into a handle we must free when it returns one).
 //! - A process that disappears or refuses access mid-cycle is reported as
 //!   inaccessible — never an engine-wide error.
+//! - Cross-bitness targets (32-bit processes inspected from the 64-bit app)
+//!   have a different PEB layout; command-line retrieval simply returns
+//!   `None` there rather than guessing offsets.
 //!
 //! Reference: [`OpenProcess`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess)
-//! and [`QueryFullProcessImageNameW`](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-k32getprocessimagefilenamew)
-//! (kernel32 export) in the Microsoft Win32 documentation.
+//! and [`NtQueryInformationProcess`](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess)
+//! in the Microsoft documentation.
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, NO_ERROR,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE,
 };
+use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PEB,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+    RTL_USER_PROCESS_PARAMETERS,
 };
 
 use super::sampler::{
@@ -84,6 +96,121 @@ pub(crate) fn now_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Open for full inspection: try `QUERY_LIMITED | VM_READ` first (needed for
+/// the command-line PEB walk), then degrade to limited-only when the target
+/// refuses VM_READ (protected/system processes). Returns the guard plus
+/// whether VM_READ was granted.
+fn open_for_inspection(pid: u32) -> Option<(ProcessHandle, bool)> {
+    // SAFETY: both OpenProcess calls are read-only flag combinations.
+    let with_vm_read =
+        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid) };
+    if !with_vm_read.is_null() {
+        return Some((unsafe { ProcessHandle::own(with_vm_read) }, true));
+    }
+    open_limited(pid).ok().map(|guard| (guard, false))
+}
+
+/// Hard cap for a command-line byte length — normal command lines are well
+/// under 32 KB; anything larger is treated as garbage rather than allocated.
+const MAX_COMMAND_LINE_BYTES: usize = 64 * 1024;
+
+/// Read the target process's full command line via its PEB.
+///
+/// Chain: `NtQueryInformationProcess(ProcessBasicInformation)` →
+/// `PebBaseAddress` → read the remote `PEB` → read the remote
+/// `RTL_USER_PROCESS_PARAMETERS` → read the `CommandLine` UTF-16 buffer.
+/// All three reads are pure `ReadProcessMemory` copies; nothing is written.
+///
+/// Returns `None` when any step is refused (no `VM_READ` grant, protected
+/// process, cross-bitness target, or the process died mid-walk).
+#[cfg(target_pointer_width = "64")]
+unsafe fn query_command_line(handle: HANDLE) -> Option<String> {
+    // 1. PEB base address.
+    let mut pbi: windows_sys::Win32::System::Threading::PROCESS_BASIC_INFORMATION =
+        std::mem::zeroed();
+    let mut return_length: u32 = 0;
+    // SAFETY: pbi is a valid, correctly-sized out-buffer; the handle is open
+    // with (at least) QUERY_LIMITED_INFORMATION, which is what this class
+    // needs.
+    let status = unsafe {
+        NtQueryInformationProcess(
+            handle,
+            ProcessBasicInformation,
+            (&mut pbi as *mut _) as *mut core::ffi::c_void,
+            std::mem::size_of::<windows_sys::Win32::System::Threading::PROCESS_BASIC_INFORMATION>()
+                as u32,
+            &mut return_length,
+        )
+    };
+    if status != 0 || pbi.PebBaseAddress.is_null() {
+        return None;
+    }
+
+    // 2. Read the remote PEB to get the ProcessParameters pointer.
+    let mut peb: PEB = std::mem::zeroed();
+    // SAFETY: peb is a valid destination of exactly the struct's size; the
+    // source is the remote PEB base reported by the kernel for this handle.
+    let ok = unsafe {
+        ReadProcessMemory(
+            handle,
+            pbi.PebBaseAddress.cast(),
+            (&mut peb as *mut _) as *mut core::ffi::c_void,
+            std::mem::size_of::<PEB>(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 || peb.ProcessParameters.is_null() {
+        return None;
+    }
+
+    // 3. Read the remote RTL_USER_PROCESS_PARAMETERS.
+    let mut params: RTL_USER_PROCESS_PARAMETERS = std::mem::zeroed();
+    // SAFETY: params is a valid destination; the source pointer came from
+    // the remote PEB we just copied.
+    let ok = unsafe {
+        ReadProcessMemory(
+            handle,
+            peb.ProcessParameters.cast(),
+            (&mut params as *mut _) as *mut core::ffi::c_void,
+            std::mem::size_of::<RTL_USER_PROCESS_PARAMETERS>(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+
+    // 4. Copy the UTF-16 command-line buffer out of the remote address space.
+    let length_bytes = params.CommandLine.Length as usize & !1; // whole UTF-16 units
+    if length_bytes == 0 {
+        return Some(String::new());
+    }
+    if length_bytes > MAX_COMMAND_LINE_BYTES || params.CommandLine.Buffer.is_null() {
+        return None;
+    }
+    let mut buffer = vec![0u16; length_bytes / 2];
+    // SAFETY: buffer holds exactly length_bytes of writable space.
+    let ok = unsafe {
+        ReadProcessMemory(
+            handle,
+            params.CommandLine.Buffer.cast(),
+            buffer.as_mut_ptr().cast(),
+            length_bytes,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buffer))
+}
+
+/// Non-64-bit builds do not attempt the PEB walk (x86 PEB layout differs).
+#[cfg(not(target_pointer_width = "64"))]
+unsafe fn query_command_line(_handle: HANDLE) -> Option<String> {
+    None
 }
 
 /// Open a process with minimal read-only rights, wrapped in the RAII guard.
@@ -168,16 +295,22 @@ unsafe fn query_memory(handle: HANDLE) -> Option<u64> {
 
 /// Inspect a single PID, mapping every failure mode to "inaccessible".
 fn inspect_pid(pid: u32) -> RawInspection {
-    match open_limited(pid) {
-        Ok(guard) => {
+    match open_for_inspection(pid) {
+        Some((guard, vm_read_granted)) => {
             let handle = guard.as_raw();
             // SAFETY: each call below takes a valid, open process handle;
-            // the guard keeps it alive until end of scope.
-            let (path, times, memory) = unsafe {
+            // the guard keeps it alive until end of scope. The command-line
+            // walk additionally requires the VM_READ grant we negotiated.
+            let (path, times, memory, command_line) = unsafe {
                 (
                     query_image_path(handle),
                     query_times(handle),
                     query_memory(handle),
+                    if vm_read_granted {
+                        query_command_line(handle)
+                    } else {
+                        None
+                    },
                 )
             };
             // The guard closes the handle here, on drop.
@@ -196,6 +329,7 @@ fn inspect_pid(pid: u32) -> RawInspection {
                             startedAt: started_at,
                             memoryBytes: memory,
                             cpuPercent: None, // merged later, with the previous cycle
+                            commandLine: command_line,
                             accessible: true,
                         },
                         cpu: Some(RawCpuSample {
@@ -215,12 +349,11 @@ fn inspect_pid(pid: u32) -> RawInspection {
                 }
             }
         }
-        Err(error_code) => {
+        None => {
             // ERROR_ACCESS_DENIED (protected/system process) and
             // ERROR_INVALID_PARAMETER (died between listener enumeration and
             // this lookup) are the expected paths — both are normal, not
             // engine errors. Anything else lands in the same honest bucket.
-            debug_assert_ne!(error_code, NO_ERROR);
             let _ = (ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER); // referenced for docs
             RawInspection {
                 info: ProcessInfo::inaccessible(pid),

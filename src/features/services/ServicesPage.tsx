@@ -1,33 +1,59 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { usePortListeners } from '@/hooks'
 import { usePortsStore } from '@/stores/portsStore'
+import type { ServiceCategory } from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 import { groupListenersByProcess } from './groupProcesses'
+import {
+  categoryBadgeClass,
+  confidenceBadgeClass,
+  confidenceLabel,
+  confidenceTooltip,
+  evidenceSummary,
+} from './identity'
+
+/** Category filter chips shown above the process list. */
+const CATEGORY_FILTERS: ReadonlyArray<{ value: ServiceCategory | 'all'; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'frontend', label: 'Frontend' },
+  { value: 'backend', label: 'Backend' },
+  { value: 'database', label: 'Database' },
+  { value: 'ai', label: 'AI' },
+  { value: 'infrastructure', label: 'Infrastructure' },
+  { value: 'unknown', label: 'Unknown' },
+]
 
 /**
- * Services view — ACTIVE LOCAL PROCESSES.
+ * Services view — ACTIVE LOCAL PROCESSES with real service identities.
  *
- * Real data: listener rows grouped by owning PID (the domain adapter in
- * `groupProcesses.ts`), merged with the Phase 2 process intelligence from
- * the native snapshot. No framework/service identity is claimed here —
- * a process is called by its executable name or, when Windows refuses
- * access, honestly "Unavailable". Classification arrives in Phase 3.
+ * Grouped by PID (pure frontend adapter), classified by the native
+ * intelligence layer from evidence (executable, path, command line).
+ * Confidence is always shown; generic runtimes stay honestly generic
+ * ("Node.js", "Python") when framework evidence is missing.
  */
 export function ServicesPage() {
   usePortListeners()
   const listeners = usePortsStore((state) => state.listeners)
   const processByPid = usePortsStore((state) => state.processByPid)
+  const serviceByPid = usePortsStore((state) => state.serviceByPid)
   const loading = usePortsStore((state) => state.loading)
   const refreshing = usePortsStore((state) => state.refreshing)
   const error = usePortsStore((state) => state.error)
   const lastUpdated = usePortsStore((state) => state.lastUpdated)
   const refreshListeners = usePortsStore((state) => state.refreshListeners)
 
+  const [filter, setFilter] = useState<ServiceCategory | 'all'>('all')
+  const [expandedPid, setExpandedPid] = useState<number | null>(null)
+
   const groups = useMemo(
-    () => groupListenersByProcess(listeners, processByPid),
-    [listeners, processByPid],
+    () =>
+      groupListenersByProcess(listeners, processByPid, serviceByPid).filter((group) => {
+        if (filter === 'all') return true
+        return group.identity?.category === filter
+      }),
+    [listeners, processByPid, serviceByPid, filter],
   )
 
   return (
@@ -39,18 +65,29 @@ export function ServicesPage() {
           <RefreshButton onClick={() => void refreshListeners()} refreshing={refreshing} />
         </div>
         <p className="mt-1 text-sm text-slate-500">
-          Active local processes behind the discovered listeners. Names are executable
-          basenames from Windows — service identities (Next.js, Flask, PostgreSQL, …)
-          arrive with Phase 3 detection, so nothing is guessed here.
+          Active local processes with evidence-based service identities. Confidence is
+          always explicit — generic runtimes are never dressed up as frameworks.
         </p>
       </div>
 
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-          Active Local Processes
-        </h2>
-        <span className="text-xs text-slate-500">
-          {loading ? '…' : `${groups.length} process${groups.length === 1 ? '' : 'es'}`} · auto-refresh 3s · updated{' '}
+      {/* Category filter */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        {CATEGORY_FILTERS.map((entry) => (
+          <button
+            key={entry.value}
+            type="button"
+            onClick={() => setFilter(entry.value)}
+            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+              filter === entry.value
+                ? 'border-slate-600 bg-slate-800 text-slate-100'
+                : 'border-slate-800 bg-slate-900 text-slate-500 hover:border-slate-700 hover:text-slate-300'
+            }`}
+          >
+            {entry.label}
+          </button>
+        ))}
+        <span className="ml-auto text-xs text-slate-500">
+          {loading ? '…' : `${groups.length} shown`} · auto-refresh 3s · updated{' '}
           {formatTime(lastUpdated)}
         </span>
       </div>
@@ -59,9 +96,6 @@ export function ServicesPage() {
         <div className="rounded-lg border border-red-900/60 bg-red-950/30 px-4 py-3 text-sm text-red-300">
           <p className="font-medium">Discovery error</p>
           <p className="mt-1 text-xs text-red-400/80">{error}</p>
-          <p className="mt-2 text-xs text-red-400/60">
-            Data may be stale below — the last successful snapshot is kept.
-          </p>
         </div>
       ) : null}
 
@@ -71,83 +105,135 @@ export function ServicesPage() {
         </div>
       ) : groups.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-800 p-10 text-center">
-          <p className="text-sm text-slate-400">No active processes with listening ports.</p>
+          <p className="text-sm text-slate-400">
+            {filter === 'all'
+              ? 'No active processes with listening ports.'
+              : `No ${filter} services right now.`}
+          </p>
           <p className="mt-1 text-xs text-slate-600">
             Start a dev server — it will appear here automatically within ~3 seconds.
           </p>
         </div>
       ) : (
         <ul className="overflow-hidden rounded-lg border border-slate-800">
-          {groups.map((group, index) => (
-            <li
-              key={group.pid}
-              className={`bg-slate-900/60 px-4 py-3 ${index > 0 ? 'border-t border-slate-800' : ''}`}
-            >
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span
-                  className={`h-2 w-2 shrink-0 rounded-full ${
-                    group.accessible ? 'bg-emerald-400' : 'bg-slate-500'
-                  }`}
-                  title={
-                    group.accessible
-                      ? 'Process inspected successfully'
-                      : 'Process metadata unavailable (Windows denied access or process is gone)'
-                  }
-                />
+          {groups.map((group, index) => {
+            const expanded = expandedPid === group.pid
+            return (
+              <li
+                key={group.pid}
+                className={`bg-slate-900/60 ${index > 0 ? 'border-t border-slate-800' : ''}`}
+              >
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ${
+                      group.accessible ? 'bg-emerald-400' : 'bg-slate-500'
+                    }`}
+                    title={
+                      group.accessible
+                        ? 'Process inspected successfully'
+                        : 'Process metadata unavailable (access denied or process gone)'
+                    }
+                  />
 
-                <span
-                  className={`truncate font-mono text-sm font-medium ${
-                    group.accessible ? 'text-slate-200' : 'text-slate-400'
-                  }`}
-                  title={
-                    group.process?.executablePath ??
-                    'Executable path not available for this process'
-                  }
-                >
-                  {group.displayName}
-                </span>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedPid(expanded ? null : group.pid)}
+                    className="max-w-56 truncate text-left text-sm font-semibold text-slate-100 hover:text-white"
+                    title="Toggle detection details"
+                  >
+                    {group.displayName}
+                  </button>
 
-                <span className="font-mono text-xs text-slate-500">PID {group.pid}</span>
+                  {group.identity !== null && (
+                    <>
+                      <span
+                        className={`rounded border px-1.5 py-0.5 text-xs ${confidenceBadgeClass(
+                          group.identity.confidence,
+                        )}`}
+                        title={confidenceTooltip(group.identity.confidence)}
+                      >
+                        {confidenceLabel(group.identity.confidence)}
+                      </span>
+                      {group.identity.category !== 'unknown' && (
+                        <span
+                          className={`rounded border px-1.5 py-0.5 text-xs ${categoryBadgeClass(
+                            group.identity.category,
+                          )}`}
+                        >
+                          {group.identity.category}
+                        </span>
+                      )}
+                    </>
+                  )}
 
-                <span className="flex-1 truncate font-mono text-xs text-slate-500">
-                  {group.ports.length > 0
-                    ? `Ports ${group.ports.join(', ')}`
-                    : 'No ports'}
-                  {' · '}
-                  {group.addresses.length > 0 ? group.addresses.join(', ') : ''}
-                </span>
+                  <span className="font-mono text-xs text-slate-500">
+                    {group.process?.name ?? `PID ${group.pid}`}
+                  </span>
+                  <span className="font-mono text-xs text-slate-500">PID {group.pid}</span>
 
-                <span
-                  className="font-mono text-xs text-slate-400"
-                  title={
-                    group.cpuPercent === null
-                      ? 'First sample — CPU is measured on the next refresh'
-                      : 'CPU over the last refresh window, normalized per logical core'
-                  }
-                >
-                  CPU {formatCpuPercent(group.cpuPercent)}
-                </span>
+                  <span className="flex-1 truncate font-mono text-xs text-slate-500">
+                    {group.ports.length > 0 ? `Ports ${group.ports.join(', ')}` : 'No ports'}
+                  </span>
 
-                <span className="font-mono text-xs text-slate-400">
-                  RAM {formatBytes(group.memoryBytes)}
-                </span>
-              </div>
+                  <span
+                    className="font-mono text-xs text-slate-400"
+                    title={
+                      group.cpuPercent === null
+                        ? 'First sample — CPU is measured on the next refresh'
+                        : undefined
+                    }
+                  >
+                    CPU {formatCpuPercent(group.cpuPercent)}
+                  </span>
+                  <span className="font-mono text-xs text-slate-400">
+                    RAM {formatBytes(group.memoryBytes)}
+                  </span>
+                </div>
 
-              {group.process?.executablePath != null && (
-                <p className="mt-1 truncate pl-5 font-mono text-xs text-slate-600">
-                  {group.process.executablePath}
-                </p>
-              )}
-            </li>
-          ))}
+                {expanded && (
+                  <div className="border-t border-slate-800/60 bg-slate-950/40 px-4 py-3 text-xs text-slate-400">
+                    <dl className="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1.5">
+                      <dt className="text-slate-500">Process</dt>
+                      <dd className="font-mono">{group.process?.name ?? '—'}</dd>
+                      <dt className="text-slate-500">Executable</dt>
+                      <dd className="truncate font-mono" title={group.process?.executablePath ?? undefined}>
+                        {group.process?.executablePath ?? '—'}
+                      </dd>
+                      <dt className="text-slate-500">Command line</dt>
+                      <dd className="break-all font-mono" title={group.process?.commandLine ?? undefined}>
+                        {group.process?.commandLine ?? 'not readable (access denied)'}
+                      </dd>
+                      <dt className="text-slate-500">Started</dt>
+                      <dd className="font-mono">{formatTime(group.process?.startedAt ?? null)}</dd>
+                      <dt className="text-slate-500">Confidence</dt>
+                      <dd>
+                        {group.identity ? (
+                          <span title={confidenceTooltip(group.identity.confidence)}>
+                            {confidenceLabel(group.identity.confidence)}
+                          </span>
+                        ) : (
+                          '—'
+                        )}
+                      </dd>
+                      <dt className="text-slate-500">Evidence</dt>
+                      <dd className="font-mono">
+                        {group.identity && group.identity.evidence.length > 0
+                          ? evidenceSummary(group.identity)
+                          : 'none'}
+                      </dd>
+                    </dl>
+                  </div>
+                )}
+              </li>
+            )
+          })}
         </ul>
       )}
 
       <p className="mt-3 text-xs text-slate-600">
-        Multiple listener rows of one process (e.g. the same port on IPv4 and IPv6) are
-        grouped into a single entry. Processes marked “Unavailable” keep their port and
-        PID — Windows refused full inspection, which is normal for protected system
-        processes. LocalStack never terminates or modifies any of these processes.
+        Identities are classified from evidence (executable name, path, command line) —
+        port numbers are never strong evidence, so node.exe on :3000 stays “Node.js”
+        unless Next.js evidence exists. Click a name for the detection details.
       </p>
     </div>
   )

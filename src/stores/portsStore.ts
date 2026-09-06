@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 import { getPortListeners } from '@/services/native/ports'
-import type { PortListener, ProcessInfo } from '@/types/domain'
+import type { PortListener, ProcessInfo, ServiceIdentity } from '@/types/domain'
 
 /** One in-flight or completed refresh generation. */
 interface PortsState {
@@ -12,6 +12,11 @@ interface PortsState {
    * PID for O(1) lookup when rendering listener rows.
    */
   processByPid: ReadonlyMap<number, ProcessInfo>
+  /**
+   * Service/framework identity per PID (Phase 3 intelligence layer).
+   * PID-based: all listener rows of one process share one identity.
+   */
+  serviceByPid: ReadonlyMap<number, ServiceIdentity>
   /** Wall-clock duration of the last native cycle, or null. */
   durationMs: number | null
   /** True until the first snapshot (success or failure) arrives. */
@@ -46,6 +51,7 @@ export const usePortsStore = create<PortsState>()((set, get) => {
       set({
         listeners: response.listeners,
         processByPid: new Map(response.processes.map((p) => [p.pid, p])),
+        serviceByPid: new Map(response.services.map((s) => [s.pid, s])),
         durationMs: response.durationMs,
         lastUpdated: response.lastUpdated,
         error: null,
@@ -64,6 +70,7 @@ export const usePortsStore = create<PortsState>()((set, get) => {
   return {
     listeners: [],
     processByPid: new Map(),
+    serviceByPid: new Map(),
     durationMs: null,
     loading: true,
     refreshing: false,

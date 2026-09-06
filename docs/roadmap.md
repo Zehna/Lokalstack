@@ -123,14 +123,61 @@ PIDs not yet resolved to process names (Phase 2).
 design — no elevation); CPU values are per-window rates, not instantaneous
 snapshots; working set is the only memory metric so far.
 
-## Phase 3 — Service Detection
+## Phase 3 — Service Detection ✅
 
 **Goal:** name what is running.
 
-- Classify listeners into known services (Next.js, Vite, Express, Flask,
-  FastAPI, Django, PostgreSQL, MySQL, Redis, ...).
-- Evidence-based classification (command line, ports, handshake responses) —
-  never guessing on port numbers alone.
+**Implemented:**
+
+- New `src-tauri/src/intelligence/` layer: `rules.rs` (pure, deterministic,
+  fully unit-tested detector) + `mod.rs` (per-PID identity attached to the
+  cycle; no extra Windows calls, so cycle cost stays at Phase 2 scale).
+- **Command-line retrieval** added to `process/windows.rs` via the documented
+  PEB walk — `NtQueryInformationProcess(ProcessBasicInformation)` → remote
+  `PEB` → `RTL_USER_PROCESS_PARAMETERS.CommandLine` → `ReadProcessMemory` —
+  requiring `PROCESS_VM_READ` on top of `QUERY_LIMITED_INFORMATION`, with
+  graceful degradation (command line `null`) when refused. `ProcessInfo`
+  gained `commandLine`.
+- **ServiceIdentity model:** `kind` (30+ `ServiceKind` variants) ·
+  `displayName` · `category` (frontend/backend/database/ai/infrastructure/
+  unknown) · `confidence` (exact/high/medium/low enum — no fake percentages)
+  · `evidence` (`{source, value}` entries retained for the details view).
+- **Rule priority:** exact executables (postgres/mysqld/mariadbd/
+  redis-server/ollama → Exact; llama-server/ComfyUI → High) → command-line
+  rules scoped to the runtime family (next dev/start, vite → High;
+  flask run, manage.py runserver, uvicorn → High; fastapi CLI, gradio →
+  Medium) → path-based AI rules → honest fallbacks (Node.js/Python exact
+  runtime, `OneDrive.Sync.Service.exe`-style low, `Unavailable`).
+- **Anti-false-positive guarantees (tested):** port 3000 alone never means
+  Next.js; port 7860 alone never means Gradio; uvicorn never auto-equals
+  FastAPI; `node server.js` stays Node.js (no Express without its CLI);
+  token-boundary matching prevents substring accidents; all matching is
+  case-insensitive with original-case fallback display names.
+- **Frontend:** `ServiceIdentity`/`Evidence`/`Confidence` domain types,
+  `serviceByPid` map, Service column on Ports (hover shows evidence),
+  identity-first Dashboard rows, Services page with category filters +
+  confidence/category badges + expandable per-PID details (executable,
+  command line, confidence, evidence), service-name search.
+
+**Verification (all passed):**
+
+- 89 Rust tests total (39 new detection tests incl. every acceptance-criteria
+  rule); all Phase 1–2 tests untouched and green.
+- Live: LocalStack's own Vite dev server on :1420 classified **Vite
+  (High, evidence `command_line: "vite"`)** — command line independently
+  confirmed via `Get-CimInstance Win32_Process`. A real **PostgreSQL
+  (Exact)** discovered on a non-default port (55432) from executable
+  evidence alone; CIM confirmed name + path. Framework-less node processes
+  stayed "Node.js"; protected processes kept honest generic identities.
+- Perf: 48 listeners / 25 unique PIDs / full cycle 11–43 ms.
+- Desktop app relaunched against the Phase 3 binary; identities reached the
+  UI. `npm run typecheck`, `npm run build`, `cargo check`, `cargo test` all
+  green.
+
+**Known limitations:** framework detection only as good as Windows allows
+(protected processes → no command line → generic identity); Express/WebUI
+need their own CLI evidence; classification is intentionally not
+manifest-based (no package.json reading — Phase 4).
 
 ## Phase 4 — Project Detection
 

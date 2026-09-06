@@ -30,6 +30,12 @@ windows-sys = { version = "0.60", features = [
   "Win32_System_Threading",
   "Win32_System_ProcessStatus",
   "Win32_System_Diagnostics_ToolHelp",
+  # Command-line retrieval (Phase 3): NtQueryInformationProcess (Wdk) and
+  # ReadProcessMemory for reading the target's RTL_USER_PROCESS_PARAMETERS.
+  # Win32_System_Kernel gates the PEB/PROCESS_BASIC_INFORMATION structs.
+  "Wdk_System_Threading",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_Kernel",
 ] }
 
 [dev-dependencies]

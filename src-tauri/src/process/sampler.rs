@@ -43,6 +43,10 @@ pub(crate) struct ProcessInfo {
      * renders `None` as `—` / "calculating…". We never fabricate `0.0`.
      */
     pub cpuPercent: Option<f64>,
+    /// Full command line of the process (Phase 3, via the PEB walk), or
+    /// `null` when unreadable (no VM_READ grant, protected process, gone).
+    /// Retained for framework detection and the future Details view.
+    pub commandLine: Option<String>,
     /// Whether the process could be inspected at all this cycle.
     pub accessible: bool,
 }
@@ -57,6 +61,7 @@ impl ProcessInfo {
             startedAt: None,
             memoryBytes: None,
             cpuPercent: None,
+            commandLine: None,
             accessible: false,
         }
     }
@@ -476,6 +481,7 @@ mod tests {
             startedAt: Some(1_700_000_000_000),
             memoryBytes: Some(100 * 1024 * 1024),
             cpuPercent: None,
+            commandLine: None,
             accessible: true,
         }
     }

@@ -4,7 +4,7 @@ import { ArrowUpDown, Search } from 'lucide-react'
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { usePortListeners } from '@/hooks'
 import { usePortsStore } from '@/stores/portsStore'
-import type { PortListener, ProcessInfo } from '@/types/domain'
+import type { PortListener, ProcessInfo, ServiceIdentity } from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 
 /** Column keys the table can sort by. Only port sorting is required in Phase 1. */
@@ -13,6 +13,7 @@ type SortDirection = 'asc' | 'desc'
 function listenerMatches(
   listener: PortListener,
   process: ProcessInfo | undefined,
+  identity: ServiceIdentity | undefined,
   query: string,
 ): boolean {
   const q = query.trim().toLowerCase()
@@ -21,7 +22,8 @@ function listenerMatches(
     String(listener.port).includes(q) ||
     String(listener.pid).includes(q) ||
     listener.localAddress.toLowerCase().includes(q) ||
-    (process?.name?.toLowerCase().includes(q) ?? false)
+    (process?.name?.toLowerCase().includes(q) ?? false) ||
+    (identity?.displayName.toLowerCase().includes(q) ?? false)
   )
 }
 
@@ -44,6 +46,7 @@ export function PortsPage() {
   usePortListeners()
   const listeners = usePortsStore((state) => state.listeners)
   const processByPid = usePortsStore((state) => state.processByPid)
+  const serviceByPid = usePortsStore((state) => state.serviceByPid)
   const loading = usePortsStore((state) => state.loading)
   const refreshing = usePortsStore((state) => state.refreshing)
   const error = usePortsStore((state) => state.error)
@@ -57,9 +60,16 @@ export function PortsPage() {
   const visible = useMemo(
     () =>
       listeners
-        .filter((listener) => listenerMatches(listener, processByPid.get(listener.pid), query))
+        .filter((listener) =>
+          listenerMatches(
+            listener,
+            processByPid.get(listener.pid),
+            serviceByPid.get(listener.pid),
+            query,
+          ),
+        )
         .sort((a, b) => compareListeners(a, b, direction)),
-    [listeners, processByPid, query, direction],
+    [listeners, processByPid, serviceByPid, query, direction],
   )
 
   return (
@@ -146,6 +156,7 @@ export function PortsPage() {
                     <span className="lowercase">{direction === 'asc' ? '↑' : '↓'}</span>
                   </button>
                 </th>
+                <th scope="col" className="px-4 py-2.5 font-medium">Service</th>
                 <th scope="col" className="px-4 py-2.5 font-medium">Process</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-medium">PID</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-medium">CPU</th>
@@ -158,6 +169,7 @@ export function PortsPage() {
             <tbody>
               {visible.map((listener) => {
                 const process = processByPid.get(listener.pid)
+                const identity = serviceByPid.get(listener.pid)
                 const rowKey = `${listener.ipVersion}-${listener.localAddress}-${listener.port}-${listener.pid}`
                 return (
                   <tr
@@ -168,14 +180,25 @@ export function PortsPage() {
                       {listener.port}
                     </td>
                     <td
-                      className="max-w-44 truncate px-4 py-2.5 font-mono text-slate-300"
+                      className="max-w-40 truncate px-4 py-2.5 font-medium text-slate-200"
+                      title={
+                        identity
+                          ? `${identity.displayName} (${identity.confidence}) — ${identity.evidence
+                              .map((e) => `${e.source}: ${e.value}`)
+                              .join(', ')}`
+                          : 'No service identity available'
+                      }
+                    >
+                      {identity?.displayName ?? 'Unknown'}
+                    </td>
+                    <td
+                      className="max-w-36 truncate px-4 py-2.5 font-mono text-slate-300"
                       title={
                         process?.executablePath ??
                         'Process metadata unavailable (access denied or process gone)'
                       }
                     >
                       {process?.name ?? 'Unavailable'}
-                      {process?.accessible === false && process?.name !== null ? ' *' : '' }
                     </td>
                     <td className="px-4 py-2.5 text-right font-mono text-slate-400">
                       {listener.pid}
@@ -210,8 +233,8 @@ export function PortsPage() {
 
       <p className="mt-3 text-xs text-slate-600">
         One socket per row — the same port on IPv4 and IPv6 (or two bind addresses) is
-        two rows, not a duplicate. * = display name from the system process snapshot
-        while full metadata stayed unavailable.
+        two rows, not a duplicate. Service names come from evidence-based detection
+        (executable, path, command line); hover a service for its evidence.
       </p>
     </div>
   )

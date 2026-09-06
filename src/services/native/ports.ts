@@ -15,6 +15,7 @@ import type { PortListenersResponse } from '@/types/domain'
 interface RawPortListenersResponse {
   listeners: PortListenersResponse['listeners']
   processes: PortListenersResponse['processes']
+  services: PortListenersResponse['services']
   /** Unix epoch milliseconds at which the backend captured the snapshot. */
   capturedAt: number
   /** Wall-clock duration of the native cycle, in milliseconds. */
@@ -39,6 +40,7 @@ export async function getPortListeners(): Promise<PortListenersResponse> {
   return {
     listeners: raw.listeners,
     processes: raw.processes,
+    services: raw.services,
     lastUpdated: raw.capturedAt,
     durationMs: raw.durationMs,
   }

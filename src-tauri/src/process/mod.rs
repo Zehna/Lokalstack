@@ -99,11 +99,17 @@ pub(crate) fn run_discovery_cycle(
         // Restore display names for processes Windows refused to open.
         windows::apply_snapshot_names(&mut processes);
 
+        // Phase 3: classify each PID into a developer-facing service
+        // identity from evidence (executable, path, command line). Pure
+        // derivation — no additional Windows calls.
+        let services = crate::intelligence::classify_processes(&processes, &listeners);
+
         let response = crate::discovery::PortListenersResponse {
             capturedAt: wall_ms,
             durationMs: started.elapsed().as_millis() as u64,
             listeners,
             processes,
+            services,
         };
         Ok(DiscoveryCycle {
             response,
@@ -191,6 +197,7 @@ mod tests {
                 durationMs: 1,
                 listeners: Vec::new(),
                 processes: Vec::new(),
+                services: Vec::new(),
             },
             raw_samples,
         };

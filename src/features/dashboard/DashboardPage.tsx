@@ -5,23 +5,25 @@ import { SummaryCard } from './components/SummaryCard'
 import { usePortListeners } from '@/hooks'
 import { useAppStore } from '@/stores/appStore'
 import { usePortsStore } from '@/stores/portsStore'
-import type { PortListener, ProcessInfo } from '@/types/domain'
+import type { PortListener, ProcessInfo, ServiceIdentity } from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 
 /**
- * One real listener row. Deliberately honest: Phase 2 shows exactly what
- * Windows reports — port, bind address, and the owning process's *executable
- * name*, CPU and memory. Framework identities (Next.js, Flask, …) are NOT
- * known until Phase 3 detection, so nothing is guessed here.
+ * One real listener row. Shows the evidence-based service identity (or the
+ * honest runtime/generic name), port, address, and live CPU/RAM. Identities
+ * carry confidence from the native detector; nothing is guessed from ports.
  */
 function ListenerRow({
   listener,
   process,
+  identity,
 }: {
   listener: PortListener
   process: ProcessInfo | undefined
+  identity: ServiceIdentity | undefined
 }) {
   const setActiveView = useAppStore((state) => state.setActiveView)
+  const displayName = identity?.displayName ?? process?.name ?? `PID ${listener.pid}`
   return (
     <li>
       <button
@@ -35,16 +37,19 @@ function ListenerRow({
         </span>
 
         <span
-          className={`max-w-40 truncate font-mono text-sm font-medium ${
-            process?.accessible === false ? 'text-slate-400' : 'text-slate-200'
-          }`}
+          className="max-w-40 truncate text-sm font-semibold text-slate-100"
           title={
-            process?.executablePath ??
-            'Process metadata unavailable (access denied or process gone)'
+            identity
+              ? `${displayName} (${identity.confidence}) — ${identity.evidence
+                  .map((e) => `${e.source}: ${e.value}`)
+                  .join(', ')}`
+              : (process?.executablePath ?? 'Process metadata unavailable')
           }
         >
-          {process?.name ?? `PID ${listener.pid}`}
+          {displayName}
         </span>
+
+        <span className="font-mono text-xs text-slate-500">{process?.name ?? ''}</span>
 
         <span className="rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 font-mono text-xs text-slate-400">
           :{listener.port}
@@ -89,6 +94,7 @@ export function DashboardPage() {
   usePortListeners()
   const listeners = usePortsStore((state) => state.listeners)
   const processByPid = usePortsStore((state) => state.processByPid)
+  const serviceByPid = usePortsStore((state) => state.serviceByPid)
   const loading = usePortsStore((state) => state.loading)
   const refreshing = usePortsStore((state) => state.refreshing)
   const error = usePortsStore((state) => state.error)
@@ -178,17 +184,16 @@ export function DashboardPage() {
                 key={`${listener.ipVersion}-${listener.localAddress}-${listener.port}-${listener.pid}`}
                 listener={listener}
                 process={processByPid.get(listener.pid)}
+                identity={serviceByPid.get(listener.pid)}
               />
             ))}
           </ul>
         )}
 
         <p className="mt-3 text-xs text-slate-600">
-          Rows show what Windows reports: port, transport, IP version, bind address, and
-          the owning process's executable name, CPU and working-set memory. “Unavailable”
-          means Windows denied inspection (normal for protected system processes).
-          Framework identities (Next.js, Flask, PostgreSQL, …) arrive with Phase 3
-          detection — LocalStack does not guess.
+          Rows show the evidence-based service identity (or the honest runtime name —
+          node.exe stays “Node.js” without framework evidence), port, bind address,
+          CPU and working-set memory. “Unavailable” means Windows denied inspection.
         </p>
       </section>
     </div>
