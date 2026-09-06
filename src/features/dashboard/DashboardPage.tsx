@@ -1,21 +1,26 @@
 import { Activity, Boxes, TriangleAlert } from 'lucide-react'
 
-import { MockDataBadge } from './components/MockDataBadge'
+import { RefreshButton } from '@/app/components/RefreshButton'
 import { SummaryCard } from './components/SummaryCard'
 import { usePortListeners } from '@/hooks'
-import { RefreshButton } from '@/app/components/RefreshButton'
 import { useAppStore } from '@/stores/appStore'
 import { usePortsStore } from '@/stores/portsStore'
-import type { PortListener } from '@/types/domain'
-import { formatPort, formatTime } from '@/utils/format'
-
+import type { PortListener, ProcessInfo } from '@/types/domain'
+import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 
 /**
- * One real listener row. Deliberately honest: Phase 1 has no process or
- * framework intelligence, so rows show exactly what the OS reports — port,
- * transport, IP version, bind address, PID — and nothing more.
+ * One real listener row. Deliberately honest: Phase 2 shows exactly what
+ * Windows reports — port, bind address, and the owning process's *executable
+ * name*, CPU and memory. Framework identities (Next.js, Flask, …) are NOT
+ * known until Phase 3 detection, so nothing is guessed here.
  */
-function ListenerRow({ listener }: { listener: PortListener }) {
+function ListenerRow({
+  listener,
+  process,
+}: {
+  listener: PortListener
+  process: ProcessInfo | undefined
+}) {
   const setActiveView = useAppStore((state) => state.setActiveView)
   return (
     <li>
@@ -29,7 +34,21 @@ function ListenerRow({ listener }: { listener: PortListener }) {
           <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
         </span>
 
-        <span className="font-mono text-sm font-medium text-slate-200">{listener.port}</span>
+        <span
+          className={`max-w-40 truncate font-mono text-sm font-medium ${
+            process?.accessible === false ? 'text-slate-400' : 'text-slate-200'
+          }`}
+          title={
+            process?.executablePath ??
+            'Process metadata unavailable (access denied or process gone)'
+          }
+        >
+          {process?.name ?? `PID ${listener.pid}`}
+        </span>
+
+        <span className="rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 font-mono text-xs text-slate-400">
+          :{listener.port}
+        </span>
 
         <span className="rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-xs text-slate-400">
           TCP · IPv{listener.ipVersion}
@@ -39,6 +58,21 @@ function ListenerRow({ listener }: { listener: PortListener }) {
           {listener.localAddress}
         </span>
 
+        <span
+          className="font-mono text-xs text-slate-400"
+          title={
+            process?.cpuPercent == null
+              ? 'First sample — CPU appears on the next refresh'
+              : 'CPU over the last refresh window, normalized per logical core'
+          }
+        >
+          CPU {formatCpuPercent(process?.cpuPercent ?? null)}
+        </span>
+
+        <span className="font-mono text-xs text-slate-400">
+          RAM {formatBytes(process?.memoryBytes ?? null)}
+        </span>
+
         <span className="font-mono text-xs text-slate-500">PID {listener.pid}</span>
       </button>
     </li>
@@ -46,18 +80,20 @@ function ListenerRow({ listener }: { listener: PortListener }) {
 }
 
 /**
- * Dashboard — the summary cards plus a REAL listener section fed by the
- * Windows discovery engine every ~3 seconds. The mock "example services"
- * list from Phase 0 remains, clearly labeled, as a preview of the richer
- * Phase 3 identity view; real and mock surfaces never mix.
+ * Dashboard — summary cards plus the REAL listener section, fed every ~3 s
+ * by the Windows discovery + process-intelligence pipeline. No mock service
+ * identities anywhere: executable names come from Windows, and nothing more
+ * is claimed until Phase 3 detection exists.
  */
 export function DashboardPage() {
   usePortListeners()
   const listeners = usePortsStore((state) => state.listeners)
+  const processByPid = usePortsStore((state) => state.processByPid)
   const loading = usePortsStore((state) => state.loading)
   const refreshing = usePortsStore((state) => state.refreshing)
   const error = usePortsStore((state) => state.error)
   const lastUpdated = usePortsStore((state) => state.lastUpdated)
+  const durationMs = usePortsStore((state) => state.durationMs)
   const refreshListeners = usePortsStore((state) => state.refreshListeners)
 
   const listenerCount = listeners.length
@@ -118,6 +154,7 @@ export function DashboardPage() {
           </h2>
           <span className="text-xs text-slate-500">
             auto-refresh 3s · updated {formatTime(lastUpdated)}
+            {durationMs !== null ? ` · cycle ${durationMs} ms` : ''}
           </span>
         </div>
 
@@ -140,47 +177,18 @@ export function DashboardPage() {
               <ListenerRow
                 key={`${listener.ipVersion}-${listener.localAddress}-${listener.port}-${listener.pid}`}
                 listener={listener}
+                process={processByPid.get(listener.pid)}
               />
             ))}
           </ul>
         )}
 
         <p className="mt-3 text-xs text-slate-600">
-          Rows show only what Windows reports (port, transport, IP version, bind address, PID).
-          Process names and service identities arrive in Phase 2–3 — LocalStack does not guess.
-        </p>
-      </section>
-
-      {/* Mock preview of the Phase 3 identity view */}
-      <section className="mt-10" aria-labelledby="mock-services-heading">
-        <div className="mb-3 flex items-center gap-3">
-          <h2
-            id="mock-services-heading"
-            className="text-sm font-semibold uppercase tracking-wider text-slate-400"
-          >
-            Services Preview
-          </h2>
-          <MockDataBadge />
-        </div>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {[
-            { name: 'Next.js', port: 3000 },
-            { name: 'Flask', port: 5000 },
-            { name: 'PostgreSQL', port: 5432 },
-            { name: 'llama.cpp', port: 8080 },
-          ].map((service) => (
-            <div
-              key={service.name}
-              className="rounded-lg border border-dashed border-slate-800 bg-slate-900/40 px-3 py-2.5"
-            >
-              <p className="truncate text-sm font-medium text-slate-300">{service.name}</p>
-              <p className="font-mono text-xs text-slate-500">{formatPort(service.port)}</p>
-            </div>
-          ))}
-        </div>
-        <p className="mt-2 text-xs text-slate-600">
-          Static example of the named-service view planned for Phase 3 (framework detection) —
-          these are NOT detected services.
+          Rows show what Windows reports: port, transport, IP version, bind address, and
+          the owning process's executable name, CPU and working-set memory. “Unavailable”
+          means Windows denied inspection (normal for protected system processes).
+          Framework identities (Next.js, Flask, PostgreSQL, …) arrive with Phase 3
+          detection — LocalStack does not guess.
         </p>
       </section>
     </div>

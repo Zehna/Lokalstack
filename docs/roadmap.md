@@ -61,13 +61,67 @@ renders all eight views with mock data properly labeled.
 **Known limitations:** Windows-only (explicit error elsewhere); TCP only;
 PIDs not yet resolved to process names (Phase 2).
 
-## Phase 2 — Process Intelligence
+## Phase 2 — Process Intelligence ✅
 
 **Goal:** know *who* is listening.
 
-- Map ports to PIDs, executable paths, command lines, CPU and RAM usage.
-- Platform abstraction inside `discovery` so Windows specifics stay contained.
-- First health signals from `health/` (process liveness, basic responsiveness).
+**Implemented:**
+
+- New `src-tauri/src/process/` engine: `sampler.rs` (pure logic + unit
+  tests) · `windows.rs` (narrow unsafe FFI, RAII handle guard) · `mod.rs`
+  (one-cycle pipeline + cross-cycle state).
+- Windows APIs with **minimum access rights**
+  (`PROCESS_QUERY_LIMITED_INFORMATION` only): `OpenProcess`,
+  `QueryFullProcessImageNameW` (executable path → basename),
+  `GetProcessTimes` (start time, cumulative CPU), `GetProcessMemoryInfo`
+  (working set), plus a `CreateToolhelp32Snapshot` name lookup for
+  access-denied PIDs. No PowerShell/WMIC/tasklist in the production path.
+- `get_port_listeners` now returns `{ listeners, processes, capturedAt,
+  durationMs }` — one payload per cycle, each unique PID sampled exactly
+  once per cycle regardless of how many ports it owns.
+- **CPU via delta sampling:**
+  `cpu% = 100 × Δcpu_ticks / Δwall_ticks / logical_cores`, clamped 0–100,
+  computed against the previous cycle's cache. First observation is `null`
+  ("—"), never a fabricated 0%. The cache key includes the process creation
+  time, so PID reuse invalidates the baseline; dead PIDs are dropped each
+  cycle (no unbounded growth).
+- **Memory metric: WorkingSetSize** (raw bytes in the domain; KB/MB/GB
+  formatting only in the UI). **Start time:** creation FILETIME → Unix ms.
+- **Access-denied semantics:** protected processes (lsass, services,
+  svchost, …) keep their listener row and PID with `accessible: false` and
+  null metadata plus a snapshot-derived display name — discovery never fails
+  because one process refuses inspection.
+- Frontend: `ProcessInfo` domain type, `processByPid` map in `portsStore`,
+  process-aware Ports table (Port / Process / PID / CPU / Memory / Bind
+  Address / IP / State), Dashboard rows with real process name + CPU + RAM,
+  and the Services page is now the real grouped "Active Local Processes"
+  view (`groupProcesses.ts` adapter — pure frontend logic, no extra
+  scanning). All mock data and mock stores removed.
+
+**Verification (all passed):**
+
+- 50 Rust unit tests, including FILETIME conversion (boundaries, rounding,
+  extreme values), basename extraction, CPU math (per-core normalization,
+  clamping, first-sample, backwards-clock, counter-reset), PID-reuse cache
+  identity, merge behavior, and live FFI checks.
+- Live two-cycle system test (`cargo test -- --ignored --nocapture`):
+  45–46 listeners, 23–24 unique PIDs, 11–12 accessible; cycle time 16–39 ms;
+  CPU averages dynamic across runs (0.03% → 2.88% with a dev server
+  polling).
+- Independent cross-check via `Get-Process`: node.exe, explorer.exe and
+  OneDrive.Sync.Service.exe matched on PID, name, full path and working set
+  (±1–4%, expected for a fluctuating metric); PID 1068 (svchost) showed an
+  empty `Path` in PowerShell too — access-denied confirmed independently.
+- Port 1420 checked explicitly while the dev server ran: engine
+  `1420 IPv6 ::1 PID 23232 node.exe C:\Program Files\nodejs\node.exe` —
+  exact match with `Get-NetTCPConnection` + `Get-Process`.
+- Desktop sanity: `tauri dev` launched the real app window against the new
+  command.
+- `npm run typecheck`, `npm run build`, `cargo check`, `cargo test` all green.
+
+**Known limitations:** protected system processes stay metadata-less (by
+design — no elevation); CPU values are per-window rates, not instantaneous
+snapshots; working set is the only memory metric so far.
 
 ## Phase 3 — Service Detection
 

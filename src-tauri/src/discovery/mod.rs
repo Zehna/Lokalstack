@@ -6,15 +6,14 @@
 //!
 //! `ports.rs` holds the pure logic (DTOs, byte-order conversion, IPv4/IPv6
 //! address decoding, normalization) and `windows.rs` holds the narrow,
-//! unsafe FFI boundary to `GetExtendedTcpTable`. The rest of the crate only
-//! sees [`enumerate_tcp_listeners`] and the serde DTO [`PortListener`] —
-//! no Windows types leak past this module.
+//! unsafe FFI boundary to `GetExtendedTcpTable`.
 //!
-//! ## Later phases (placeholders)
+//! ## Phase 2 — Process Intelligence (implemented in `crate::process`)
 //!
-//! - Phase 2 — Process Intelligence: map PIDs to executables, command lines,
-//!   resource usage.
-//! - Phase 3 — Service Detection: classify listeners into known services.
+//! The `get_port_listeners` Tauri command now lives in `crate::process`,
+//! because a refresh cycle is one pipeline: listeners → unique PIDs →
+//! process inspection → CPU delta merge. This module keeps the shared
+//! response DTO ([`PortListenersResponse`]) and the port-discovery engine.
 //!
 //! The engines never probe port ranges, never parse `netstat` output, and
 //! never require elevated privileges.
@@ -31,65 +30,30 @@ pub(crate) use ports::PortListener;
 /// Public response DTO for the `get_port_listeners` Tauri command.
 ///
 /// Wraps the listener list with the fields the frontend needs to render
-/// loading/error/empty states honestly.
+/// loading/error/empty states honestly, plus the Phase 2 process
+/// intelligence for the listeners' owning PIDs.
 #[derive(Debug, Clone, Serialize)]
 // Field names deliberately mirror the frontend contract — camelCase JSON.
 #[allow(non_snake_case)]
 pub(crate) struct PortListenersResponse {
     /// All TCP listeners (IPv4 + IPv6), deduplicated and sorted by port.
     pub listeners: Vec<PortListener>,
+    /// Process metadata for every unique PID in the listener list.
+    pub processes: Vec<crate::process::ProcessInfo>,
     /// Unix epoch milliseconds at which the snapshot was taken.
     pub capturedAt: u64,
-}
-
-/// Enumerate all TCP listeners on this machine (read-only).
-///
-/// Platform dispatch: the real engine on Windows; an explicit, honest error
-/// everywhere else (Phase 1 is Windows-first per the roadmap).
-#[allow(clippy::unused_async)] // async signature is part of the Tauri command contract
-pub(crate) async fn discover_port_listeners() -> Result<PortListenersResponse, String> {
-    #[cfg(windows)]
-    {
-        let started_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-
-        let listeners = tauri::async_runtime::spawn_blocking(windows::enumerate_tcp_listeners)
-            .await
-            .map_err(|e| format!("discovery task join error: {e}"))?;
-
-        Ok(PortListenersResponse {
-            capturedAt: started_at,
-            listeners: ports::normalize_listeners(listeners?),
-        })
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = std::marker::PhantomData::<PortListener>;
-        Err("Port discovery is Windows-only in Phase 1.".to_string())
-    }
+    /// Wall-clock duration of the full discovery cycle, in milliseconds.
+    pub durationMs: u64,
 }
 
 #[cfg(test)]
 mod tests {
-    /// LIVE-SYSTEM TEST (#[ignore]d so CI stays hermetic).
-    ///
-    /// Runs the real production discovery path against the actual Windows
-    /// TCP tables and prints every listener. Run explicitly with:
-    ///
-    ///     cargo test -- --ignored --nocapture
-    ///
-    /// Assertions are limited to invariants that must always hold for any
-    /// system state (parse succeeds, ports in range, state LISTEN), so the
-    /// test never fails because a dev server came or went.
     /// LIVE-SYSTEM TEST (#[ignore]d so normal `cargo test` stays hermetic).
     ///
-    /// Runs the full production path exactly as the frontend calls it —
-    /// the async `discover_port_listeners` wrapper (spawn_blocking +
-    /// normalization) plus the serde JSON serialization the Tauri command
-    /// performs — against the real Windows TCP tables. Run explicitly with:
+    /// Runs the full Phase 2 production path exactly as the frontend calls
+    /// it: two full discovery cycles (so CPU percentages are computed on the
+    /// second one), including serde JSON serialization, timing, and an
+    /// access-denied/restricted-process observation. Run explicitly with:
     ///
     ///     cargo test -- --ignored --nocapture
     ///
@@ -97,43 +61,118 @@ mod tests {
     /// state, so the test never fails because a dev server came or went.
     #[test]
     #[ignore = "touches the live system; run manually for verification"]
-    fn live_command_returns_invariant_valid_listeners() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio test runtime");
+    fn live_two_cycle_snapshot_is_invariant_valid() {
+        let state = crate::process::ProcessEngineState::default();
+        let cache = state.cache.lock().expect("cache lock");
 
-        let (response, json) = runtime.block_on(async {
-            let response = super::discover_port_listeners()
-                .await
-                .expect("live discovery must not fail on Windows");
-            // Serialize exactly as the Tauri IPC layer will.
-            let json = serde_json::to_string(&response).expect("response must serialize");
-            (response, json)
-        });
+        // ---- Cycle 1: establishes the CPU baseline ----------------------
+        let cycle1 = crate::process::run_discovery_cycle(&cache)
+            .expect("live discovery must not fail on Windows");
+        let response = &cycle1.response;
 
         assert!(!response.listeners.is_empty(), "Windows always has listeners");
-        assert!(response.capturedAt > 0, "capturedAt must be a real timestamp");
-        assert!(json.contains("\"listeners\""), "JSON must contain the listeners field");
+        assert!(response.capturedAt > 0 && response.durationMs > 0);
 
-        for (index, listener) in response.listeners.iter().enumerate() {
-            assert_eq!(listener.state, super::ports::ListenerState::Listen);
-            assert!(listener.port > 0, "port must be positive");
-            assert!(!listener.localAddress.is_empty(), "address must be present");
-            if index < 60 {
+        // Every accessible process is merge-ready; every PID in the
+        // listener list must appear exactly once in the process list.
+        let unique_pids: std::collections::HashSet<u32> =
+            response.listeners.iter().map(|l| l.pid).collect();
+        let process_pids: std::collections::HashSet<u32> =
+            response.processes.iter().map(|p| p.pid).collect();
+        assert_eq!(unique_pids, process_pids, "process list must cover exactly the listener PIDs");
+
+        let accessible: Vec<_> = response
+            .processes
+            .iter()
+            .filter(|p| p.accessible)
+            .collect();
+        for process in &accessible {
+            assert!(process.name.is_some(), "accessible process must have a name");
+            assert!(process.startedAt.is_some(), "accessible process must have a start time");
+            assert!(process.memoryBytes.is_some_and(|m| m > 0), "working set must be positive");
+            assert!(process.cpuPercent.is_none(), "first cycle must not fabricate CPU");
+        }
+        println!(
+            "cycle 1: {} listeners, {} unique PIDs ({} accessible), {} ms",
+            response.listeners.len(),
+            unique_pids.len(),
+            accessible.len(),
+            response.durationMs,
+        );
+
+        // Explicit port-1420 report: what Windows' own dev-server port shows.
+        match response.listeners.iter().find(|l| l.port == 1420) {
+            Some(listener) => {
+                let process = response
+                    .processes
+                    .iter()
+                    .find(|p| p.pid == listener.pid);
                 println!(
-                    "{:>5}  {}  {:<26}  PID {:>6}",
+                    "PORT1420: engine → {} IPv{} {} PID {} name={:?} path={:?} mem={:?} cpu={:?} accessible={}",
                     listener.port,
                     match listener.ipVersion {
-                        super::ports::IpVersion::V4 => "IPv4",
-                        super::ports::IpVersion::V6 => "IPv6",
+                        super::ports::IpVersion::V4 => "4",
+                        super::ports::IpVersion::V6 => "6",
                     },
                     listener.localAddress,
                     listener.pid,
+                    process.and_then(|p| p.name.as_deref()),
+                    process.and_then(|p| p.executablePath.as_deref()),
+                    process.and_then(|p| p.memoryBytes),
+                    process.and_then(|p| p.cpuPercent),
+                    process.map(|p| p.accessible).unwrap_or(false),
                 );
             }
+            None => println!("PORT1420: not listening at engine snapshot time"),
         }
-        println!("total listeners: {}", response.listeners.len());
+        for p in response.processes.iter().take(60) {
+            println!(
+                "  PID {:>6}  {:<18}  mem={:<10}  accessible={}",
+                p.pid,
+                p.name.as_deref().unwrap_or("<unavailable>"),
+                p.memoryBytes.map(|b| format!("{} bytes", b)).unwrap_or_else(|| "—".into()),
+                p.accessible,
+            );
+        }
+
+        // Cache adopts cycle 1's raw samples as cycle 2's baseline.
+        let next = crate::process::build_next_cache(&cycle1);
+        drop(cache);
+        *state.cache.lock().unwrap() = next;
+
+        // ---- Cycle 2: computes real delta CPU percentages ----------------
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        let cache = state.cache.lock().expect("cache lock");
+        let cycle2 = crate::process::run_discovery_cycle(&cache)
+            .expect("live discovery must not fail on Windows");
+        let response2 = &cycle2.response;
+
+        let accessible2: Vec<_> = response2
+            .processes
+            .iter()
+            .filter(|p| p.accessible && p.cpuPercent.is_some())
+            .collect();
+        for process in &accessible2 {
+            // Clamp contract: 0.0–100.0 (per-core-normalized).
+            let cpu = process.cpuPercent.expect("filtered above");
+            assert!((0.0..=100.0).contains(&cpu), "CPU must be clamped, got {cpu}");
+        }
+        println!(
+            "cycle 2: {} listeners, {} processes with CPU values (avg {:.2}%), {} ms",
+            response2.listeners.len(),
+            accessible2.len(),
+            if accessible2.is_empty() {
+                0.0
+            } else {
+                accessible2.iter().map(|p| p.cpuPercent.unwrap()).sum::<f64>() / accessible2.len() as f64
+            },
+            response2.durationMs,
+        );
+
+        // Serialize exactly as the Tauri IPC layer will.
+        let json = serde_json::to_string(&response2).expect("response must serialize");
+        assert!(json.contains("\"processes\""), "JSON must carry process data");
+        println!("serialized payload: {} bytes", json.len());
     }
 
     #[test]

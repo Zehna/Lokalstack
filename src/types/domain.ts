@@ -69,11 +69,46 @@ export interface PortListener {
   state: 'LISTEN'
 }
 
+/**
+ * One Windows process, as far as the OS let us inspect it. Mirrors the Rust
+ * `ProcessInfo` DTO from `src-tauri/src/process/`.
+ *
+ * Access-denied is a first-class outcome, not an error: `accessible: false`
+ * means the listener exists but Windows refused (or the process died before
+ * inspection) — `name`/`executablePath` may still carry a snapshot-derived
+ * display name, but the rich metadata is honestly `null`. The UI must render
+ * `null` as "unavailable", never as a guess.
+ */
+export interface ProcessInfo {
+  /** Process ID the snapshot was taken for. */
+  pid: number
+  /** Image basename (e.g. `node.exe`), or `null` when unknown. */
+  name: string | null
+  /** Full executable path, or `null` when Windows does not reveal it. */
+  executablePath: string | null
+  /** Process start time as Unix epoch milliseconds, or `null`. */
+  startedAt: number | null
+  /** Working set in bytes (raw domain value; format only in the UI), or `null`. */
+  memoryBytes: number | null
+  /**
+   * CPU percent over the last sampling window (per-core normalized, 0–100),
+   * or `null` on the first observation — no fabricated `0%` before a real
+   * delta exists.
+   */
+  cpuPercent: number | null
+  /** Whether the process could be inspected this cycle. */
+  accessible: boolean
+}
+
 /** Response of the `get_port_listeners` Tauri command. */
 export interface PortListenersResponse {
   listeners: PortListener[]
+  /** Process metadata for every unique PID in the listener list. */
+  processes: ProcessInfo[]
   /** Unix epoch milliseconds at which the snapshot was taken. */
   lastUpdated: number
+  /** Wall-clock duration of the native discovery cycle, in milliseconds. */
+  durationMs: number
 }
 
 /** Aggregated CPU / memory usage snapshot. */

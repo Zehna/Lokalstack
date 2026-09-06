@@ -1,12 +1,19 @@
 import { create } from 'zustand'
 
 import { getPortListeners } from '@/services/native/ports'
-import type { PortListener } from '@/types/domain'
+import type { PortListener, ProcessInfo } from '@/types/domain'
 
 /** One in-flight or completed refresh generation. */
 interface PortsState {
   /** All TCP listeners from the last successful native snapshot. */
   listeners: PortListener[]
+  /**
+   * Process intelligence for the unique PIDs of the last snapshot, keyed by
+   * PID for O(1) lookup when rendering listener rows.
+   */
+  processByPid: ReadonlyMap<number, ProcessInfo>
+  /** Wall-clock duration of the last native cycle, or null. */
+  durationMs: number | null
   /** True until the first snapshot (success or failure) arrives. */
   loading: boolean
   /** True while any refresh is in flight (drives the manual-refresh spinner). */
@@ -29,27 +36,21 @@ interface PortsState {
 }
 
 /**
- * Real port-discovery state, fed by the `get_port_listeners` Tauri command
- * via the native client. No mock data ever enters this store.
+ * Real port + process-discovery state, fed by the `get_port_listeners` Tauri
+ * command via the native client. No mock data ever enters this store.
  */
-export const usePortsStore = create<PortsState>()((set, get) => ({
-  listeners: [],
-  loading: true,
-  refreshing: false,
-  error: null,
-  lastUpdated: null,
-
-  loadListeners: async () => {
-    if (get().refreshing) return
-    set({ refreshing: true, loading: true, error: null })
+export const usePortsStore = create<PortsState>()((set, get) => {
+  async function runCycle(): Promise<void> {
     try {
       const response = await getPortListeners()
       set({
         listeners: response.listeners,
+        processByPid: new Map(response.processes.map((p) => [p.pid, p])),
+        durationMs: response.durationMs,
         lastUpdated: response.lastUpdated,
-        loading: false,
-        refreshing: false,
         error: null,
+        refreshing: false,
+        loading: false,
       })
     } catch (cause) {
       set({
@@ -58,26 +59,27 @@ export const usePortsStore = create<PortsState>()((set, get) => ({
         error: cause instanceof Error ? cause.message : String(cause),
       })
     }
-  },
+  }
 
-  refreshListeners: async () => {
-    if (get().refreshing) return
-    set({ refreshing: true })
-    try {
-      const response = await getPortListeners()
-      set({
-        listeners: response.listeners,
-        lastUpdated: response.lastUpdated,
-        error: null,
-        refreshing: false,
-        loading: false,
-      })
-    } catch (cause) {
-      set({
-        refreshing: false,
-        loading: false,
-        error: cause instanceof Error ? cause.message : String(cause),
-      })
-    }
-  },
-}))
+  return {
+    listeners: [],
+    processByPid: new Map(),
+    durationMs: null,
+    loading: true,
+    refreshing: false,
+    error: null,
+    lastUpdated: null,
+
+    loadListeners: async () => {
+      if (get().refreshing) return
+      set({ refreshing: true, loading: true, error: null })
+      await runCycle()
+    },
+
+    refreshListeners: async () => {
+      if (get().refreshing) return
+      set({ refreshing: true })
+      await runCycle()
+    },
+  }
+})

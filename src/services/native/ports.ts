@@ -9,18 +9,22 @@
 
 import { invoke } from '@tauri-apps/api/core'
 
-import type { PortListener, PortListenersResponse } from '@/types/domain'
+import type { PortListenersResponse } from '@/types/domain'
 
 /** Shape returned by the Rust `get_port_listeners` command. */
 interface RawPortListenersResponse {
-  listeners: PortListener[]
+  listeners: PortListenersResponse['listeners']
+  processes: PortListenersResponse['processes']
   /** Unix epoch milliseconds at which the backend captured the snapshot. */
   capturedAt: number
+  /** Wall-clock duration of the native cycle, in milliseconds. */
+  durationMs: number
 }
 
 /**
  * Read-only Tauri command: every TCP listener currently bound on this
- * machine (IPv4 + IPv6), with owning PID and bind address.
+ * machine (IPv4 + IPv6) plus process intelligence for each owning PID,
+ * sampled once per cycle.
  *
  * Rejects with a human-readable error string when the native engine fails;
  * callers are expected to surface that in UI error states, not crash.
@@ -34,6 +38,8 @@ export async function getPortListeners(): Promise<PortListenersResponse> {
   const raw = await invoke<RawPortListenersResponse>('get_port_listeners')
   return {
     listeners: raw.listeners,
+    processes: raw.processes,
     lastUpdated: raw.capturedAt,
+    durationMs: raw.durationMs,
   }
 }

@@ -22,10 +22,11 @@ between layers sit.
 │  @tauri-apps/api invoke() ⇄ #[tauri::command] fns       │
 ├─────────────────────────────────────────────────────────┤
 │          Rust feature modules (src-tauri/src/*)         │
-│  discovery · health · control · conflicts · workspace · ai
+│  discovery · process · health · control · conflicts ·   │
+│  workspace · ai                                         │
 ├─────────────────────────────────────────────────────────┤
 │      Native engines (OS APIs, Windows-first)            │
-│  process/port enumeration, filesystem inspection, ...   │
+│  TCP table + process enumeration, filesystem, ...       │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -44,11 +45,13 @@ between layers sit.
 ## 2. State & hooks
 
 - Zustand stores (`src/stores/`) hold cross-view state: the app store tracks
-  the active view, `portsStore` holds **real** listener data from the native
-  engine, and the dashboard store holds mock data for still-mock surfaces.
+  the active view, and `portsStore` holds **real** discovery data from the
+  native engine — listeners, the per-PID `processByPid` map, cycle duration,
+  loading/error/lastUpdated. There is no mock store; every rendered row is
+  native data.
 - Hooks (`src/hooks/`) are the only place components start side effects.
   `usePortListeners` performs the initial load and the ~3-second automatic
-  refresh; `useMockLiveUsage` simulates usage until Phase 2.
+  refresh.
 
 ### 2.1 Native client boundary (Phase 1+)
 
@@ -66,11 +69,13 @@ searching for `invoke(` finds exactly one directory.
 ## 3. Domain types (TypeScript)
 
 - `src/types/domain.ts` defines the concepts the UI renders: `Service`,
-  `ServiceStatus`, `PortConflict`, `Workspace`, `SystemUsage`, `ViewId`.
-- These types are the **contract** with the backend: from Phase 1 on, Tauri
-  commands return serde DTOs that serialize into exactly these shapes. Phase 0
-  deliberately keeps them minimal — fields are added when an engine actually
-  produces the data, not before.
+  `ProcessInfo`, `PortListener`, `PortConflict`, `Workspace`, `SystemUsage`,
+  `ViewId`.
+- These types are the **contract** with the backend: Tauri commands return
+  serde DTOs that serialize into exactly these shapes. Fields are added when
+  an engine actually produces the data, not before. Listener information
+  (`PortListener`) stays distinct from process information (`ProcessInfo`);
+  they are merged only at render time via the PID key.
 
 ## 4. Tauri command boundary
 
@@ -85,10 +90,10 @@ searching for `invoke(` finds exactly one directory.
 
 ### 4.1 Registered commands
 
-| Command              | Returns                              | Phase |
-|----------------------|--------------------------------------|-------|
-| `greet`              | sample string (boundary smoke test)  | 0     |
-| `get_port_listeners` | `PortListenersResponse` (read-only)  | 1     |
+| Command              | Returns                                        | Phase |
+|----------------------|------------------------------------------------|-------|
+| `greet`              | sample string (boundary smoke test)            | 0     |
+| `get_port_listeners` | `PortListenersResponse` — listeners + process intelligence, read-only | 1–2  |
 
 ## 5. Rust feature modules
 
@@ -97,8 +102,9 @@ responsibility:
 
 | Module       | Responsibility                                        | Phase |
 |--------------|-------------------------------------------------------|-------|
-| `discovery`  | Enumerate listeners, map to processes, classify services | 1–3  |
-| `health`     | Localhost health probes and per-service health state   | 2+    |
+| `discovery`  | TCP listener enumeration (`GetExtendedTcpTable`)        | 1    |
+| `process`    | Process intelligence: names, paths, CPU/RAM, start time | 2    |
+| `health`     | Localhost health probes and per-service health state   | 3+    |
 | `workspace`  | Group services into development workspaces             | 6     |
 | `control`    | Explicit, user-confirmed service control actions       | 5     |
 | `conflicts`  | Detect and explain port conflicts                      | 7     |
@@ -134,30 +140,83 @@ Design points:
   (address, port, pid) tuple — the same port on `0.0.0.0` and `::` is two
   sockets and both are shown.
 
-Rules for the modules:
-
-- OS-specific code stays inside `discovery`/`control` behind platform-agnostic
-  facades, so the rest of the app depends on interfaces, not on `netstat`
-  output.
-- Modules expose `pub` items only when an engine exists.
-
-## Data flow (implemented for port discovery, Phase 1)
+### 5.2 Process intelligence engine (implemented, Phase 2)
 
 ```
-Rust: windows.rs (FFI) ──► ports.rs (normalize) ──► mod.rs (DTO)
-                                                          │
+process/
+├── mod.rs       facade: one-cycle pipeline, cross-cycle SampleCache state,
+│                the get_port_listeners command
+├── sampler.rs   pure logic: ProcessInfo DTO, FILETIME conversion, basename
+│                extraction, delta CPU math, cache merge — fully unit-tested
+└── windows.rs   unsafe FFI: OpenProcess / QueryFullProcessImageNameW /
+                 GetProcessTimes / GetProcessMemoryInfo (+ toolhelp snapshot
+                 name lookup); every handle closed via an RAII guard
+```
+
+Sampling architecture (one refresh cycle):
+
+```
+listeners (GetExtendedTcpTable)
+  → unique PID set (BTreeSet)
+  → OpenProcess once per PID (minimum rights: PROCESS_QUERY_LIMITED_INFORMATION)
+  → path + times + memory per PID
+  → delta CPU vs the previous cycle's cache (per-core normalized)
+  → merge into PortListenersResponse { listeners, processes, capturedAt, durationMs }
+```
+
+Design points:
+
+- **Minimum access rights.** Only `PROCESS_QUERY_LIMITED_INFORMATION` is
+  requested — it covers all three queries. No `PROCESS_ALL_ACCESS`, no
+  elevation.
+- **Access-denied is data, not an error.** A protected process (services.exe,
+  lsass.exe, most svchost.exe instances) keeps its listener row and PID and
+  renders as `accessible: false` with `null` metadata; a best-effort display
+  name comes from the toolhelp process snapshot, which needs no handle. A
+  process that dies between listener enumeration and inspection is the same
+  honest case.
+- **CPU is a delta, never a cumulative counter.**
+  `cpu% = 100 × (Δ cpu_ticks / Δ wall_ticks) / logical_cores`, computed per
+  refresh cycle against the previous cycle's sample, clamped to 0–100. The
+  first observation is `null` ("—" in the UI), never a fabricated `0%`.
+  Ticks are 100 ns units from `GetProcessTimes`; wall time comes from the
+  snapshot timestamp. The cache key includes the process creation time, so a
+  reused PID cannot inherit a stale baseline; dead PIDs are dropped every
+  cycle, so the cache cannot grow unboundedly.
+- **Memory metric: WorkingSetSize** from `GetProcessMemoryInfo`, exposed as
+  raw bytes in the domain; formatting to KB/MB/GB happens only in the UI
+  layer.
+- **Start time** is the `GetProcessTimes` creation FILETIME converted to Unix
+  epoch milliseconds (tested conversion, isolated in `sampler.rs`); the UI
+  renders it as a local time or relative age.
+- **No duplicated scans.** Five listeners sharing one PID cost one
+  `OpenProcess` per cycle; the Services page groups rows by PID purely in
+  frontend logic (`groupProcesses.ts`) — no second native pass.
+
+#### 5.3 Refresh behavior
+
+## Data flow (implemented for port + process discovery, Phase 1–2)
+
+```
+Rust: discovery/windows.rs (TCP FFI) ──► ports.rs (normalize) ─┐
+                                                               ├─► process/mod.rs (DTO)
+Rust: process/windows.rs (OpenProcess FFI) ──► sampler.rs ─────┘        │
+                                                                        │
 React ◄─ stores/portsStore ◄─ hooks/usePortListeners ◄─ services/native/ports.ts
-                                                          │
-                                                   invoke('get_port_listeners')
+                                                                        │
+                                                       invoke('get_port_listeners')
 ```
 
-### Refresh behavior (Phase 1)
+### Refresh behavior (Phase 1–2)
 
-- **Automatic:** while the Dashboard or Ports view is mounted, listeners are
-  refreshed every ~3 seconds (`usePortListeners`). Timers are cleaned up on
-  unmount; the store drops overlapping requests, so a slow poll never stacks.
-- **Manual:** a Refresh button is present on both views and goes through the
-  same store action.
+- **Automatic:** while the Dashboard, Ports or Services view is mounted, a
+  full cycle (listeners + process sampling) runs every ~3 seconds
+  (`usePortListeners`). Timers are cleaned up on unmount; the store drops
+  overlapping requests, and the Rust-side cache mutex serializes cycles as
+  defense in depth. A cycle on a typical dev machine takes ~20 ms, so the
+  3 s cadence is comfortably non-overlapping.
+- **Manual:** a Refresh button is present on Dashboard, Ports and Services
+  and goes through the same store action.
 - **Failure handling:** errors surface in an inline error state; the last
   successful snapshot stays visible. A failing poll never clears data and
   never crashes the app.
@@ -173,17 +232,23 @@ React ◄─ stores/portsStore ◄─ hooks/usePortListeners ◄─ services/nat
 - No process modification without an explicit, user-confirmed action in the UI
   (Phase 5 will define that UX; nothing exists today).
 
-## Known limitations (Phase 1)
+## Known limitations (Phase 2)
 
 - Windows-only. Other platforms get an explicit error, not silent emptiness.
 - TCP only — UDP discovery would be a separate, explicit design.
-- PIDs are reported but not yet resolved to process names/executables
-  (Phase 2). System-owned sockets (PID 0/4) are shown as-is.
+- Protected processes cannot be fully inspected by an unelevated process —
+  expected, and rendered honestly (`accessible: false`). Full metadata for
+  system processes is out of scope by design (no elevation).
+- CPU percentages are per-refresh-window rates; instantaneous values will
+  differ from other tools sampling at different moments (verified plausible
+  and dynamic, not bit-identical).
+- Working set is the chosen memory metric; private/commit memory
+  (`PROCESS_MEMORY_COUNTERS_EX`) can be added later without breaking the
+  contract.
 - The bind address is shown verbatim (including link-local scope ids when the
-  OS reports them); zone/scope qualifiers are Phase 2 polish.
+  OS reports them); zone/scope qualifiers are future polish.
 - IPv6 v4-mapped addresses render in their canonical `::ffff:a.b.c.d` form.
-- The System Usage card and Services preview on the dashboard are still mock
-  data, labeled as such.
+- Framework/service identities are deliberately not implemented — Phase 3.
 
 ## See also
 
