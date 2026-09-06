@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Frontend build output
+dist/
+
+# Rust / Tauri build output
+src-tauri/target/
+src-tauri/gen/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.local
+*.log

@@ -1,0 +1,32 @@
+{
+  "name": "localstack-control-center",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local development environment control center — see everything running on localhost.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "icon": "node scripts/generate-icon.mjs && tauri icon src-tauri/app-icon.png --output src-tauri/icons"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "lucide-react": "^1.41.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  }
+}
