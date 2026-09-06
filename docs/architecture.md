@@ -22,8 +22,8 @@ between layers sit.
 │  @tauri-apps/api invoke() ⇄ #[tauri::command] fns       │
 ├─────────────────────────────────────────────────────────┤
 │          Rust feature modules (src-tauri/src/*)         │
-│  discovery · process · health · control · conflicts ·   │
-│  workspace · ai                                         │
+│  discovery · process · intelligence · project ·         │
+│  health · control · conflicts · workspace · ai          │
 ├─────────────────────────────────────────────────────────┤
 │      Native engines (OS APIs, Windows-first)            │
 │  TCP table + process enumeration, filesystem, ...       │
@@ -46,9 +46,10 @@ between layers sit.
 
 - Zustand stores (`src/stores/`) hold cross-view state: the app store tracks
   the active view, and `portsStore` holds **real** discovery data from the
-  native engine — listeners, the per-PID `processByPid` map, cycle duration,
-  loading/error/lastUpdated. There is no mock store; every rendered row is
-  native data.
+  native engine — listeners, the per-PID `processByPid` map, service
+  identities (`serviceByPid`), resolved projects (`projects` +
+  `projectByPid`), cycle duration, loading/error/lastUpdated. There is no
+  mock store; every rendered row is native data.
 - Hooks (`src/hooks/`) are the only place components start side effects.
   `usePortListeners` performs the initial load and the ~3-second automatic
   refresh.
@@ -93,7 +94,7 @@ searching for `invoke(` finds exactly one directory.
 | Command              | Returns                                        | Phase |
 |----------------------|------------------------------------------------|-------|
 | `greet`              | sample string (boundary smoke test)            | 0     |
-| `get_port_listeners` | `PortListenersResponse` — listeners + process intelligence + service identities, read-only | 1–3  |
+| `get_port_listeners` | `PortListenersResponse` — listeners + process intelligence + service identities + project resolution, read-only | 1–4  |
 
 ## 5. Rust feature modules
 
@@ -105,7 +106,8 @@ responsibility:
 | `discovery`   | TCP listener enumeration (`GetExtendedTcpTable`)        | 1    |
 | `process`     | Process intelligence: names, paths, CPU/RAM, start time, command line | 2–3 |
 | `intelligence`| Evidence-based service & framework classification       | 3    |
-| `health`      | Localhost health probes and per-service health state   | 4+    |
+| `project`     | Project resolution from process evidence (markers, Git, package manager) | 4    |
+| `health`      | Localhost health probes and per-service health state   | 5+    |
 | `workspace`  | Group services into development workspaces             | 6     |
 | `control`    | Explicit, user-confirmed service control actions       | 5     |
 | `conflicts`  | Detect and explain port conflicts                      | 7     |
@@ -258,16 +260,97 @@ stay honest (Node.js, Python — confidence `exact` for the runtime, not the
 framework), unknown executables keep their real name with `low`, and
 inaccessible processes render `Unavailable` while keeping port + PID.
 
-## Data flow (implemented for port + process + service discovery, Phase 1–3)
+### 5.5 Project intelligence engine (implemented, Phase 4)
+
+```
+project/
+├── mod.rs      facade: ProjectIdentity model, candidate extraction,
+│               resolve_process / resolve_projects (content-addressed cache),
+│               cycle wiring
+├── markers.rs  pure + bounded filesystem logic: marker scan, parent walk,
+│               package.json parsing, package-manager detection,
+│               start-command inference, manifest name extraction
+└── git.rs      read-only Git facts: .git directory AND worktree file,
+               branch from HEAD parsing — no git CLI is ever spawned
+```
+
+Pipeline: `ProcessInfo (command line, executable path) → candidate paths →
+bounded parent walk → confirmed project root → manifests → ProjectIdentity`.
+
+**Candidate extraction.** Only absolute paths (drive-letter or UNC) from
+quote-aware command-line tokenization are candidates. Relative paths are
+skipped — the working directory is unknown, and resolving against the app's
+own CWD would fabricate evidence. The executable path is a last-resort
+candidate (covers `target\debug\app.exe`-style launches); a runtime install
+directory simply finds no marker and yields no project.
+
+**Bounded parent walk.** From each candidate the walk ascends at most
+`MAX_PARENT_DEPTH` (10) levels, stopping at the first strong marker
+(package.json, pyproject.toml, setup.py/cfg, Cargo.toml, go.mod). Supporting
+markers (lockfiles, requirements.txt, Pipfile, poetry.lock, uv.lock,
+docker-compose.yml, compose.yml) confirm a root but never claim one beneath
+a stronger candidate. Paths inside dependency directories (`node_modules`,
+`.venv`, `venv`, `site-packages`, `target`, `dist`, `build`) are lifted to
+their nearest non-dependency ancestor before the walk. **Home directories
+and drive roots are never claimed as project roots** — a stray package.json
+in `C:\Users\me` cannot own a process running deep inside `AppData`.
+
+**ProjectIdentity model.** `{ id (root path), name, rootPath, kind
+(node_js/python/rust/go/unknown), git { isRepository, rootPath, branch },
+packageManager, startCommand { command, confidence, evidence }, confidence,
+evidence }`. Names come from the manifest when readable (package.json
+`name`, pyproject `project.name`, Cargo `[package] name`, go.mod `module`
+last segment) and fall back to the directory basename.
+
+**Package-manager detection.** `package.json` `"packageManager"` field wins
+always; otherwise exactly one lockfile decides (package-lock → npm,
+pnpm-lock → pnpm, yarn.lock → Yarn, bun.lock/.lockb → Bun); conflicting
+lockfiles produce the honest `Ambiguous` — never a silent choice.
+
+**Start-command inference.** If the observed command line maps to a
+package.json script (its underlying command, e.g. script `"dev": "vite"`
+and a vite process), the honest result is `npm run dev` / `pnpm dev` — with
+the manager prefix only when manager evidence exists, otherwise the
+underlying command. A directly run script reports verbatim. Unmapped
+command lines are reported as-is with `medium` confidence; nothing is ever
+fabricated, and no command line means no command.
+
+**Association confidence.** `exact` = direct in-root path evidence (script
+inside the project itself); `high` = dependency-directory lift
+(`node_modules/vite/bin/vite.js` → enclosing project); `medium` =
+supporting-marker-only root. No evidence → no project at all: the process
+stays unlinked ("Unknown Project" in the UI), never forced.
+
+**Evidence model.** Same shape as Phase 3 (`{ source, value }`), with
+sources `command_path`, `marker`, `package_json`, `lockfile`, `start_command`,
+`git_root`, `pyproject`, `cargo_manifest`, `go_mod`.
+
+**Identity separation.** The response carries `projects` (unique
+identities) + `projectLinks` (PID → project id); the frontend maps them to
+`projectByPid`. One project shared by many PIDs (vite + the desktop binary)
+references one identity; unrelated sibling projects stay separate because
+the association requires root-marker evidence, not a shared parent folder.
+
+**Caching.** Resolution is content-addressed on *(executable path, command
+line)* — exactly the inputs that determine the outcome. Warm cycles do zero
+filesystem work; the cache is bounded (cleared at 256 entries). Invalidation:
+command-line change, cache eviction, or the manual Refresh button, which
+passes `bypassProjectCache: true` to re-read markers, manifests, and the Git
+branch from disk. Between manual refreshes a branch change is picked up on
+the next invalidation — a documented trade-off that keeps 3-second polling
+filesystem-free.
+
+## Data flow (implemented for port + process + service + project discovery, Phase 1–4)
 
 ```
 Rust: discovery/windows.rs (TCP FFI) ──► ports.rs (normalize) ─┐
-                                                               ├─► process/mod.rs ──► intelligence (classify) ──► DTO
+                                                               ├─► process/mod.rs ──► intelligence (classify)
 Rust: process/windows.rs (OpenProcess + PEB FFI) ──► sampler.rs ┘                 │
+                                                                                  ├─► project (resolve, cached) ──► DTO
                                                                                   │
-React ◄─ stores/portsStore (listeners · processByPid · serviceByPid) ◄─ hooks/usePortListeners ◄─ services/native/ports.ts
+React ◄─ stores/portsStore (listeners · processByPid · serviceByPid · projects · projectByPid) ◄─ hooks/usePortListeners ◄─ services/native/ports.ts
                                                                                   │
-                                                                 invoke('get_port_listeners')
+                                                                 invoke('get_port_listeners', { bypassProjectCache? })
 ```
 
 ### Refresh behavior (Phase 1–3)
@@ -279,8 +362,11 @@ React ◄─ stores/portsStore (listeners · processByPid · serviceByPid) ◄�
   serializes cycles as defense in depth. A cycle on a typical dev machine
   takes ~11–43 ms even with command-line retrieval, so the 3 s cadence is
   comfortably non-overlapping.
-- **Manual:** a Refresh button is present on Dashboard, Ports and Services
-  and goes through the same store action.
+- **Manual:** a Refresh button is present on Dashboard, Ports, Services and
+  Projects and goes through the same store action. A manual refresh
+  additionally re-reads project metadata from the filesystem
+  (`bypassProjectCache`), so Git branch changes and new markers appear
+  without restarting.
 - **Failure handling:** errors surface in an inline error state; the last
   successful snapshot stays visible. A failing poll never clears data and
   never crashes the app.
@@ -296,7 +382,7 @@ React ◄─ stores/portsStore (listeners · processByPid · serviceByPid) ◄�
 - No process modification without an explicit, user-confirmed action in the UI
   (Phase 5 will define that UX; nothing exists today).
 
-## Known limitations (Phase 2)
+## Known limitations (Phase 2–4)
 
 - Windows-only. Other platforms get an explicit error, not silent emptiness.
 - TCP only — UDP discovery would be a separate, explicit design.
@@ -316,12 +402,23 @@ React ◄─ stores/portsStore (listeners · processByPid · serviceByPid) ◄�
   (and cross-bitness targets) yield `commandLine: null`, so their framework
   cannot be detected — they stay generic (svchost.exe → "svchost.exe",
   node-without-VM_READ → "Node.js").
-- Classification is executable/command-line based; it deliberately does not
-  read package manifests or project folders (Phase 4 scope).
+- Classification is executable/command-line based; manifest content is used
+  only for project naming/package-manager/start-command facts, never for
+  service-identity classification.
 - Express is only detected from its own CLI; `node server.js` stays Node.js
   by design. Open WebUI/Gradio need explicit command/path evidence — a mere
   port (7860) or process name is never enough.
-- No project-directory detection yet — Phase 4.
+- Project association requires command-line path evidence; a process whose
+  command line is unreadable (protected) and whose executable lives in a
+  non-project directory stays project-unknown — databases launched by
+  services are the normal example (PostgreSQL → Unknown, by design).
+- Git facts come from parsing `.git` (directory or worktree file) and `HEAD`;
+  detached HEAD reports no branch. Between manual refreshes a branch switch
+  is picked up on the next cache invalidation (command-line change or
+  explicit refresh), not on the 3-second poll.
+- A process mapping to no project is the honest outcome, not an error:
+  `npm-cache/_npx` caches resolve (they have real package.json files) but
+  render as opaque cache directories with their hash names.
 
 ## See also
 

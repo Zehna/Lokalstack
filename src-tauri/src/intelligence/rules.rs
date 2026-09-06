@@ -104,7 +104,7 @@ pub(crate) struct Evidence {
 }
 
 impl Evidence {
-    fn new(source: &str, value: impl Into<String>) -> Self {
+    pub(crate) fn new(source: &str, value: impl Into<String>) -> Self {
         Self {
             source: source.to_string(),
             value: value.into(),

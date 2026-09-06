@@ -15,6 +15,7 @@ mod discovery;
 mod health;
 mod intelligence;
 mod process;
+mod project;
 mod workspace;
 
 /// Simple sample command proving the Tauri command boundary works end to end.
@@ -27,6 +28,7 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .manage(process::ProcessEngineState::default())
+        .manage(project::ProjectEngineState::default())
         .invoke_handler(tauri::generate_handler![
             greet,
             process::get_port_listeners

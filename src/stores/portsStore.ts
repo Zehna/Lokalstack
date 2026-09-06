@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 import { getPortListeners } from '@/services/native/ports'
-import type { PortListener, ProcessInfo, ServiceIdentity } from '@/types/domain'
+import type { PortListener, ProcessInfo, ProjectIdentity, ServiceIdentity } from '@/types/domain'
 
 /** One in-flight or completed refresh generation. */
 interface PortsState {
@@ -17,6 +17,10 @@ interface PortsState {
    * PID-based: all listener rows of one process share one identity.
    */
   serviceByPid: ReadonlyMap<number, ServiceIdentity>
+  /** Unique resolved projects (Phase 4), by root path. */
+  projects: ProjectIdentity[]
+  /** PID → project identity. Many PIDs may share one project. */
+  projectByPid: ReadonlyMap<number, ProjectIdentity>
   /** Wall-clock duration of the last native cycle, or null. */
   durationMs: number | null
   /** True until the first snapshot (success or failure) arrives. */
@@ -36,6 +40,8 @@ interface PortsState {
   /**
    * Manual/background refresh: keeps stale data visible, updates in place.
    * Skips itself if a refresh is already in flight (no overlapping requests).
+   * A manual refresh also re-reads project metadata from the filesystem
+   * (`bypassProjectCache`), picking up branch changes and new markers.
    */
   refreshListeners: () => Promise<void>
 }
@@ -45,13 +51,23 @@ interface PortsState {
  * command via the native client. No mock data ever enters this store.
  */
 export const usePortsStore = create<PortsState>()((set, get) => {
-  async function runCycle(): Promise<void> {
+  async function runCycle(bypassProjectCache = false): Promise<void> {
     try {
-      const response = await getPortListeners()
+      const response = await getPortListeners(bypassProjectCache)
+      const projectById = new Map(response.projects.map((p) => [p.id, p]))
       set({
         listeners: response.listeners,
         processByPid: new Map(response.processes.map((p) => [p.pid, p])),
         serviceByPid: new Map(response.services.map((s) => [s.pid, s])),
+        projects: response.projects,
+        projectByPid: new Map(
+          response.projectLinks
+            .map((link) => {
+              const project = projectById.get(link.projectId)
+              return project === undefined ? null : ([link.pid, project] as const)
+            })
+            .filter((entry): entry is readonly [number, ProjectIdentity] => entry !== null),
+        ),
         durationMs: response.durationMs,
         lastUpdated: response.lastUpdated,
         error: null,
@@ -71,6 +87,8 @@ export const usePortsStore = create<PortsState>()((set, get) => {
     listeners: [],
     processByPid: new Map(),
     serviceByPid: new Map(),
+    projects: [],
+    projectByPid: new Map(),
     durationMs: null,
     loading: true,
     refreshing: false,
@@ -86,7 +104,8 @@ export const usePortsStore = create<PortsState>()((set, get) => {
     refreshListeners: async () => {
       if (get().refreshing) return
       set({ refreshing: true })
-      await runCycle()
+      // Manual refresh re-reads project metadata from the filesystem.
+      await runCycle(true)
     },
   }
 })

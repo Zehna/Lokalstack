@@ -16,6 +16,8 @@ interface RawPortListenersResponse {
   listeners: PortListenersResponse['listeners']
   processes: PortListenersResponse['processes']
   services: PortListenersResponse['services']
+  projects: PortListenersResponse['projects']
+  projectLinks: PortListenersResponse['projectLinks']
   /** Unix epoch milliseconds at which the backend captured the snapshot. */
   capturedAt: number
   /** Wall-clock duration of the native cycle, in milliseconds. */
@@ -30,17 +32,21 @@ interface RawPortListenersResponse {
  * Rejects with a human-readable error string when the native engine fails;
  * callers are expected to surface that in UI error states, not crash.
  */
-export async function getPortListeners(): Promise<PortListenersResponse> {
+export async function getPortListeners(bypassProjectCache = false): Promise<PortListenersResponse> {
   if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
     throw new Error(
       'Tauri IPC bridge not available. LocalStack discovery needs the desktop app — a plain browser tab cannot read Windows TCP tables.',
     )
   }
-  const raw = await invoke<RawPortListenersResponse>('get_port_listeners')
+  const raw = await invoke<RawPortListenersResponse>('get_port_listeners', {
+    bypassProjectCache,
+  })
   return {
     listeners: raw.listeners,
     processes: raw.processes,
     services: raw.services,
+    projects: raw.projects,
+    projectLinks: raw.projectLinks,
     lastUpdated: raw.capturedAt,
     durationMs: raw.durationMs,
   }

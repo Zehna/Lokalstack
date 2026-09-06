@@ -152,6 +152,62 @@ export interface PidServiceIdentity extends ServiceIdentity {
   pid: number
 }
 
+/** Ecosystem a resolved project belongs to, from its markers. */
+export type ProjectKind = 'node_js' | 'python' | 'rust' | 'go' | 'unknown'
+
+/** Git facts about a project, as far as file parsing revealed them. */
+export interface GitInfo {
+  /** Whether the project belongs to a Git repository at all. */
+  isRepository: boolean
+  /** Repository working-tree root, or `null` when not a repository. */
+  rootPath: string | null
+  /** Current branch, or `null` for detached HEAD / unknown — never guessed. */
+  branch: string | null
+}
+
+/** An inferred start command, with its own explicit confidence. */
+export interface StartCommand {
+  /** Display string, e.g. `npm run dev` or the raw `vite …` command line. */
+  command: string
+  /** How much the inference is trusted. */
+  confidence: Confidence
+  /** Evidence backing the inference. */
+  evidence: Evidence[]
+}
+
+/**
+ * A resolved local project, associated with running processes by evidence
+ * (command-line paths → confirmed project-root markers → Git root). Never
+ * assigned from port numbers or "nearest package.json" guesses.
+ */
+export interface ProjectIdentity {
+  /** Stable id — the confirmed project root path. Shared by all its PIDs. */
+  id: string
+  /** Manifest name when readable, else the directory basename. */
+  name: string
+  /** Confirmed project root directory. */
+  rootPath: string
+  /** Ecosystem the markers identify. */
+  kind: ProjectKind
+  /** Git repository/branch facts. */
+  git: GitInfo
+  /** JS package manager (`npm`, `pnpm`, `Yarn`, `Bun`, `Ambiguous`), or `null`. */
+  packageManager: string | null
+  /** Inferred start command, or `null` when nothing honest can be said. */
+  startCommand: StartCommand | null
+  /** How strongly the process→project association is evidenced. */
+  confidence: Confidence
+  /** Evidence that produced this identity, strongest first. */
+  evidence: Evidence[]
+}
+
+/** A PID's link to a project (many PIDs may share one project identity). */
+export interface PidProjectLink {
+  pid: number
+  /** References `ProjectIdentity.id` in the same response. */
+  projectId: string
+}
+
 /** Response of the `get_port_listeners` Tauri command. */
 export interface PortListenersResponse {
   listeners: PortListener[]
@@ -159,6 +215,10 @@ export interface PortListenersResponse {
   processes: ProcessInfo[]
   /** Service identity per PID (PID-based; shared across a PID's ports). */
   services: PidServiceIdentity[]
+  /** Unique projects resolved from process evidence (Phase 4). */
+  projects: ProjectIdentity[]
+  /** PID → project id; many PIDs may share one project. */
+  projectLinks: PidProjectLink[]
   /** Unix epoch milliseconds at which the snapshot was taken. */
   lastUpdated: number
   /** Wall-clock duration of the native discovery cycle, in milliseconds. */

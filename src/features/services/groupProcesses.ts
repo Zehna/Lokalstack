@@ -8,7 +8,7 @@
  * cycle, this just reshapes the result per view.
  */
 
-import type { PortListener, ProcessInfo, ServiceIdentity } from '@/types/domain'
+import type { PortListener, ProcessInfo, ProjectIdentity, ServiceIdentity } from '@/types/domain'
 
 /** One active local process with its ports, identity and resources. */
 export interface GroupedProcess {
@@ -18,6 +18,8 @@ export interface GroupedProcess {
   process: ProcessInfo | null
   /** Service identity for the PID, or `null` if the snapshot lacks it. */
   identity: ServiceIdentity | null
+  /** Project the process belongs to, or `null` when evidence says nothing. */
+  project: ProjectIdentity | null
   /** Display name: service identity, else process name, else honest fallback. */
   displayName: string
   /** Distinct ports this process listens on, ascending. */
@@ -41,6 +43,7 @@ export function groupListenersByProcess(
   listeners: PortListener[],
   processByPid: ReadonlyMap<number, ProcessInfo>,
   serviceByPid: ReadonlyMap<number, ServiceIdentity> = new Map(),
+  projectByPid: ReadonlyMap<number, ProjectIdentity> = new Map(),
 ): GroupedProcess[] {
   const byPid = new Map<number, { ports: Set<number>; addresses: Set<string> }>()
 
@@ -62,6 +65,7 @@ export function groupListenersByProcess(
       pid,
       process,
       identity,
+      project: projectByPid.get(pid) ?? null,
       displayName:
         identity?.displayName ?? process?.name ?? 'Unavailable',
       ports: [...ports].sort((a, b) => a - b),

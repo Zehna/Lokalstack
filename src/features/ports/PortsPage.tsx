@@ -4,7 +4,7 @@ import { ArrowUpDown, Search } from 'lucide-react'
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { usePortListeners } from '@/hooks'
 import { usePortsStore } from '@/stores/portsStore'
-import type { PortListener, ProcessInfo, ServiceIdentity } from '@/types/domain'
+import type { PortListener, ProcessInfo, ProjectIdentity, ServiceIdentity } from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 
 /** Column keys the table can sort by. Only port sorting is required in Phase 1. */
@@ -14,6 +14,7 @@ function listenerMatches(
   listener: PortListener,
   process: ProcessInfo | undefined,
   identity: ServiceIdentity | undefined,
+  project: ProjectIdentity | undefined,
   query: string,
 ): boolean {
   const q = query.trim().toLowerCase()
@@ -23,7 +24,10 @@ function listenerMatches(
     String(listener.pid).includes(q) ||
     listener.localAddress.toLowerCase().includes(q) ||
     (process?.name?.toLowerCase().includes(q) ?? false) ||
-    (identity?.displayName.toLowerCase().includes(q) ?? false)
+    (identity?.displayName.toLowerCase().includes(q) ?? false) ||
+    (project?.name.toLowerCase().includes(q) ?? false) ||
+    (project?.rootPath.toLowerCase().includes(q) ?? false) ||
+    (project?.git.branch?.toLowerCase().includes(q) ?? false)
   )
 }
 
@@ -47,6 +51,7 @@ export function PortsPage() {
   const listeners = usePortsStore((state) => state.listeners)
   const processByPid = usePortsStore((state) => state.processByPid)
   const serviceByPid = usePortsStore((state) => state.serviceByPid)
+  const projectByPid = usePortsStore((state) => state.projectByPid)
   const loading = usePortsStore((state) => state.loading)
   const refreshing = usePortsStore((state) => state.refreshing)
   const error = usePortsStore((state) => state.error)
@@ -65,11 +70,12 @@ export function PortsPage() {
             listener,
             processByPid.get(listener.pid),
             serviceByPid.get(listener.pid),
+            projectByPid.get(listener.pid),
             query,
           ),
         )
         .sort((a, b) => compareListeners(a, b, direction)),
-    [listeners, processByPid, serviceByPid, query, direction],
+    [listeners, processByPid, serviceByPid, projectByPid, query, direction],
   )
 
   return (
@@ -100,7 +106,7 @@ export function PortsPage() {
             type="text"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search port, process, PID, or address…"
+            placeholder="Search port, service, project, process, PID, branch, or address…"
             className="w-full rounded-md border border-slate-800 bg-slate-900 py-1.5 pl-8 pr-3 text-sm text-slate-200 placeholder:text-slate-600 focus:border-slate-600 focus:outline-none"
           />
         </div>
@@ -136,7 +142,8 @@ export function PortsPage() {
         <div className="rounded-lg border border-dashed border-slate-800 p-10 text-center">
           <p className="text-sm text-slate-400">No listeners match “{query}”.</p>
           <p className="mt-1 text-xs text-slate-600">
-            Search matches port numbers, process names, PIDs and bind addresses.
+            Search matches port numbers, service and project names, PIDs, git branches
+            and bind addresses.
           </p>
         </div>
       ) : (
@@ -157,6 +164,7 @@ export function PortsPage() {
                   </button>
                 </th>
                 <th scope="col" className="px-4 py-2.5 font-medium">Service</th>
+                <th scope="col" className="px-4 py-2.5 font-medium">Project</th>
                 <th scope="col" className="px-4 py-2.5 font-medium">Process</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-medium">PID</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-medium">CPU</th>
@@ -170,6 +178,7 @@ export function PortsPage() {
               {visible.map((listener) => {
                 const process = processByPid.get(listener.pid)
                 const identity = serviceByPid.get(listener.pid)
+                const project = projectByPid.get(listener.pid)
                 const rowKey = `${listener.ipVersion}-${listener.localAddress}-${listener.port}-${listener.pid}`
                 return (
                   <tr
@@ -190,6 +199,16 @@ export function PortsPage() {
                       }
                     >
                       {identity?.displayName ?? 'Unknown'}
+                    </td>
+                    <td
+                      className="max-w-32 truncate px-4 py-2.5 text-slate-300"
+                      title={
+                        project
+                          ? `${project.name} — ${project.rootPath}${project.git.branch != null ? ` (⎇ ${project.git.branch})` : ''}`
+                          : 'No project association with credible evidence'
+                      }
+                    >
+                      {project?.name ?? '—'}
                     </td>
                     <td
                       className="max-w-36 truncate px-4 py-2.5 font-mono text-slate-300"
@@ -233,8 +252,8 @@ export function PortsPage() {
 
       <p className="mt-3 text-xs text-slate-600">
         One socket per row — the same port on IPv4 and IPv6 (or two bind addresses) is
-        two rows, not a duplicate. Service names come from evidence-based detection
-        (executable, path, command line); hover a service for its evidence.
+        two rows, not a duplicate. Service and project names come from evidence-based
+        detection (executable, path, command line, confirmed markers); hover for details.
       </p>
     </div>
   )

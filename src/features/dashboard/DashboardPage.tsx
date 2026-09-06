@@ -5,7 +5,7 @@ import { SummaryCard } from './components/SummaryCard'
 import { usePortListeners } from '@/hooks'
 import { useAppStore } from '@/stores/appStore'
 import { usePortsStore } from '@/stores/portsStore'
-import type { PortListener, ProcessInfo, ServiceIdentity } from '@/types/domain'
+import type { PortListener, ProcessInfo, ProjectIdentity, ServiceIdentity } from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 
 /**
@@ -17,10 +17,12 @@ function ListenerRow({
   listener,
   process,
   identity,
+  project,
 }: {
   listener: PortListener
   process: ProcessInfo | undefined
   identity: ServiceIdentity | undefined
+  project: ProjectIdentity | undefined
 }) {
   const setActiveView = useAppStore((state) => state.setActiveView)
   const displayName = identity?.displayName ?? process?.name ?? `PID ${listener.pid}`
@@ -50,6 +52,15 @@ function ListenerRow({
         </span>
 
         <span className="font-mono text-xs text-slate-500">{process?.name ?? ''}</span>
+
+        {project !== undefined && (
+          <span
+            className="max-w-32 truncate rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-xs text-slate-300"
+            title={`${project.name} — ${project.rootPath}`}
+          >
+            {project.name}
+          </span>
+        )}
 
         <span className="rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 font-mono text-xs text-slate-400">
           :{listener.port}
@@ -95,6 +106,7 @@ export function DashboardPage() {
   const listeners = usePortsStore((state) => state.listeners)
   const processByPid = usePortsStore((state) => state.processByPid)
   const serviceByPid = usePortsStore((state) => state.serviceByPid)
+  const projectByPid = usePortsStore((state) => state.projectByPid)
   const loading = usePortsStore((state) => state.loading)
   const refreshing = usePortsStore((state) => state.refreshing)
   const error = usePortsStore((state) => state.error)
@@ -103,6 +115,7 @@ export function DashboardPage() {
   const refreshListeners = usePortsStore((state) => state.refreshListeners)
 
   const listenerCount = listeners.length
+  const projects = usePortsStore((state) => state.projects)
 
   return (
     <div className="mx-auto w-full max-w-5xl px-6 py-8">
@@ -129,8 +142,8 @@ export function DashboardPage() {
         <SummaryCard
           title="Projects"
           icon={<Boxes className="h-4 w-4 text-violet-400" strokeWidth={1.8} />}
-          value="—"
-          detail="Phase 4"
+          value={loading ? '…' : String(projects.length)}
+          detail="live"
           footer="Linked to running services"
         />
         <SummaryCard
@@ -185,6 +198,7 @@ export function DashboardPage() {
                 listener={listener}
                 process={processByPid.get(listener.pid)}
                 identity={serviceByPid.get(listener.pid)}
+                project={projectByPid.get(listener.pid)}
               />
             ))}
           </ul>

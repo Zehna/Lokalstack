@@ -42,6 +42,10 @@ pub(crate) struct PortListenersResponse {
     pub processes: Vec<crate::process::ProcessInfo>,
     /// Service/framework identity per PID (Phase 3 intelligence layer).
     pub services: Vec<crate::intelligence::PidServiceIdentity>,
+    /// Unique projects resolved from process evidence (Phase 4).
+    pub projects: Vec<crate::project::ProjectIdentity>,
+    /// PID → project id (Phase 4). Many PIDs may share one project.
+    pub projectLinks: Vec<crate::project::PidProjectLink>,
     /// Unix epoch milliseconds at which the snapshot was taken.
     pub capturedAt: u64,
     /// Wall-clock duration of the full discovery cycle, in milliseconds.
@@ -65,10 +69,12 @@ mod tests {
     #[ignore = "touches the live system; run manually for verification"]
     fn live_two_cycle_snapshot_is_invariant_valid() {
         let state = crate::process::ProcessEngineState::default();
+        let project_state = crate::project::ProjectEngineState::default();
         let cache = state.cache.lock().expect("cache lock");
+        let mut project_cache = project_state.cache.lock().expect("project cache lock");
 
         // ---- Cycle 1: establishes the CPU baseline ----------------------
-        let cycle1 = crate::process::run_discovery_cycle(&cache)
+        let cycle1 = crate::process::run_discovery_cycle(&cache, &mut project_cache, false)
             .expect("live discovery must not fail on Windows");
         let response = &cycle1.response;
 
@@ -144,6 +150,58 @@ mod tests {
             None => println!("PORT1420: not listening at engine snapshot time"),
         }
 
+        // Explicit project report for port 1420 (Phase 4).
+        match response.listeners.iter().find(|l| l.port == 1420) {
+            Some(listener) => {
+                match response
+                    .projectLinks
+                    .iter()
+                    .find(|l| l.pid == listener.pid)
+                {
+                    Some(link) => {
+                        let project = response
+                            .projects
+                            .iter()
+                            .find(|p| p.id == link.projectId)
+                            .expect("link must reference a project in the response");
+                        println!(
+                            "PROJECT1420: pid={} → name={:?} root={:?} kind={:?} git(branch={:?}, repo={}) pm={:?} start={:?} confidence={:?} evidence={}",
+                            listener.pid,
+                            project.name,
+                            project.rootPath,
+                            project.kind,
+                            project.git.branch,
+                            project.git.isRepository,
+                            project.packageManager,
+                            project.startCommand.as_ref().map(|s| &s.command),
+                            project.confidence,
+                            project.evidence.iter().map(|e| format!("{}={}", e.source, e.value)).collect::<Vec<_>>().join(" | "),
+                        );
+                    }
+                    None => println!("PROJECT1420: pid {} has no project association", listener.pid),
+                }
+            }
+            None => println!("PORT1420: not listening at engine snapshot time"),
+        }
+
+        // All resolved projects.
+        for project in &response.projects {
+            println!(
+                "PROJECT: {:<28} root={:<46} kind={:?} git={:?} pm={:?} conf={:?}",
+                project.name,
+                project.rootPath,
+                project.kind,
+                project.git.branch,
+                project.packageManager,
+                project.confidence,
+            );
+        }
+        println!(
+            "PROJECTS: {} resolved, {} pid links",
+            response.projects.len(),
+            response.projectLinks.len(),
+        );
+
         // Classification overview: every process with its identity.
         for service in response.services.iter().take(30) {
             let process = response.processes.iter().find(|p| p.pid == service.pid);
@@ -173,7 +231,7 @@ mod tests {
         // ---- Cycle 2: computes real delta CPU percentages ----------------
         std::thread::sleep(std::time::Duration::from_millis(1200));
         let cache = state.cache.lock().expect("cache lock");
-        let cycle2 = crate::process::run_discovery_cycle(&cache)
+        let cycle2 = crate::process::run_discovery_cycle(&cache, &mut project_cache, false)
             .expect("live discovery must not fail on Windows");
         let response2 = &cycle2.response;
 
@@ -202,6 +260,8 @@ mod tests {
         // Serialize exactly as the Tauri IPC layer will.
         let json = serde_json::to_string(&response2).expect("response must serialize");
         assert!(json.contains("\"processes\""), "JSON must carry process data");
+        assert!(json.contains("\"projects\""), "JSON must carry project data");
+        assert!(json.contains("\"projectLinks\""), "JSON must carry project links");
         println!("serialized payload: {} bytes", json.len());
     }
 

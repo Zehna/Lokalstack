@@ -47,13 +47,17 @@ export function ServicesPage() {
   const [filter, setFilter] = useState<ServiceCategory | 'all'>('all')
   const [expandedPid, setExpandedPid] = useState<number | null>(null)
 
+  const projectByPid = usePortsStore((state) => state.projectByPid)
+
   const groups = useMemo(
     () =>
-      groupListenersByProcess(listeners, processByPid, serviceByPid).filter((group) => {
-        if (filter === 'all') return true
-        return group.identity?.category === filter
-      }),
-    [listeners, processByPid, serviceByPid, filter],
+      groupListenersByProcess(listeners, processByPid, serviceByPid, projectByPid).filter(
+        (group) => {
+          if (filter === 'all') return true
+          return group.identity?.category === filter
+        },
+      ),
+    [listeners, processByPid, serviceByPid, projectByPid, filter],
   )
 
   return (
@@ -166,6 +170,15 @@ export function ServicesPage() {
                     </>
                   )}
 
+                  {group.project !== null && (
+                    <span
+                      className="max-w-40 truncate rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-xs text-slate-300"
+                      title={`${group.project.name} — ${group.project.rootPath}`}
+                    >
+                      {group.project.name}
+                    </span>
+                  )}
+
                   <span className="font-mono text-xs text-slate-500">
                     {group.process?.name ?? `PID ${group.pid}`}
                   </span>
@@ -205,6 +218,12 @@ export function ServicesPage() {
                       </dd>
                       <dt className="text-slate-500">Started</dt>
                       <dd className="font-mono">{formatTime(group.process?.startedAt ?? null)}</dd>
+                      <dt className="text-slate-500">Project</dt>
+                      <dd className="break-all font-mono">
+                        {group.project !== null
+                          ? `${group.project.name} (${confidenceLabel(group.project.confidence)} association) · ${group.project.rootPath}`
+                          : 'no credible project evidence'}
+                      </dd>
                       <dt className="text-slate-500">Confidence</dt>
                       <dd>
                         {group.identity ? (

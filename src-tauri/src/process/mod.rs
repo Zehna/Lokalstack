@@ -61,7 +61,8 @@ pub(crate) struct DiscoveryCycle {
 }
 
 /// One full discovery cycle: TCP listener enumeration + unique-PID process
-/// inspection + CPU delta merge against the previous cycle.
+/// inspection + CPU delta merge against the previous cycle, then project
+/// resolution (Phase 4) against the project cache.
 ///
 /// Every failure mode of an individual process (gone, access denied) is
 /// absorbed into that process's [`ProcessInfo::accessible`] — only a failure
@@ -69,6 +70,8 @@ pub(crate) struct DiscoveryCycle {
 /// Phase 1 contract.
 pub(crate) fn run_discovery_cycle(
     previous_cache: &sampler::SampleCache,
+    project_cache: &mut crate::project::ProjectCache,
+    bypass_project_cache: bool,
 ) -> Result<DiscoveryCycle, String> {
     #[cfg(windows)]
     {
@@ -110,7 +113,23 @@ pub(crate) fn run_discovery_cycle(
             listeners,
             processes,
             services,
+            projects: Vec::new(),
+            projectLinks: Vec::new(),
         };
+
+        // Phase 4: resolve projects from process evidence, content-addressed
+        // cached so warm cycles do zero filesystem work.
+        let (projects, project_links, _stats) = crate::project::resolve_projects(
+            &response.processes,
+            project_cache,
+            bypass_project_cache,
+        );
+        let response = crate::discovery::PortListenersResponse {
+            projects,
+            projectLinks: project_links,
+            ..response
+        };
+
         Ok(DiscoveryCycle {
             response,
             raw_samples,
@@ -119,7 +138,7 @@ pub(crate) fn run_discovery_cycle(
 
     #[cfg(not(windows))]
     {
-        let _ = previous_cache;
+        let _ = (previous_cache, project_cache, bypass_project_cache);
         Err("Port and process discovery are Windows-only in Phase 2.".to_string())
     }
 }
@@ -150,20 +169,30 @@ pub(crate) fn build_next_cache(cycle: &DiscoveryCycle) -> sampler::SampleCache {
         .collect()
 }
 
-/// Read-only Tauri command: full snapshot of TCP listeners **and** their
-/// owning processes in one payload, so a refresh cycle samples every PID
-/// exactly once. Frontend contract: `{ listeners, processes, capturedAt,
-/// durationMs }`; rejects with a human-readable error string.
+/// Read-only Tauri command: full snapshot of TCP listeners, their owning
+/// processes, service identities, and resolved projects in one payload, so a
+/// refresh cycle samples every PID exactly once and resolves each project
+/// once. Frontend contract: `{ listeners, processes, services, projects,
+/// projectLinks, capturedAt, durationMs }`; rejects with a human-readable
+/// error string. `bypassProjectCache` (manual refresh) re-reads project
+/// metadata from the filesystem.
 #[tauri::command]
 pub(crate) async fn get_port_listeners(
     state: tauri::State<'_, ProcessEngineState>,
+    projects: tauri::State<'_, crate::project::ProjectEngineState>,
+    bypass_project_cache: Option<bool>,
 ) -> Result<crate::discovery::PortListenersResponse, String> {
     let cache = Arc::clone(&state.cache);
+    let project_cache = Arc::clone(&projects.cache);
     tauri::async_runtime::spawn_blocking(move || {
+        let bypass = bypass_project_cache.unwrap_or(false);
         let mut previous = cache
             .lock()
             .map_err(|_| "process engine cache lock poisoned".to_string())?;
-        let cycle = run_discovery_cycle(&previous)?;
+        let mut project_cache = project_cache
+            .lock()
+            .map_err(|_| "project engine cache lock poisoned".to_string())?;
+        let cycle = run_discovery_cycle(&previous, &mut project_cache, bypass)?;
         *previous = build_next_cache(&cycle);
         Ok(cycle.response)
     })
@@ -198,6 +227,8 @@ mod tests {
                 listeners: Vec::new(),
                 processes: Vec::new(),
                 services: Vec::new(),
+                projects: Vec::new(),
+                projectLinks: Vec::new(),
             },
             raw_samples,
         };

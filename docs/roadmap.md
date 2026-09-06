@@ -179,13 +179,83 @@ snapshots; working set is the only memory metric so far.
 need their own CLI evidence; classification is intentionally not
 manifest-based (no package.json reading — Phase 4).
 
-## Phase 4 — Project Detection
+## Phase 4 — Project Detection ✅
 
 **Goal:** tie services to the projects they come from.
 
-- Read-only filesystem inspection: package manifests, venvs, repo markers.
-- Surface project directory and framework per service; extend the domain model
-  (`Project`, service-to-project links).
+**Implemented:**
+
+- New `src-tauri/src/project/` layer, separate from discovery/process/
+  intelligence: `mod.rs` (ProjectIdentity model, candidate extraction,
+  resolution + content-addressed cache, cycle wiring) · `markers.rs`
+  (marker scan, bounded parent walk, package.json/pyproject/Cargo/go.mod
+  parsing, package-manager detection, start-command inference) · `git.rs`
+  (read-only `.git` directory **and** worktree-file detection, branch from
+  HEAD parsing — no git CLI ever spawned).
+- **ProjectIdentity:** `{ id, name, rootPath, kind (node_js/python/rust/go/
+  unknown), git { isRepository, rootPath, branch }, packageManager,
+  startCommand { command, confidence, evidence }, confidence, evidence }`.
+  Identity separation is preserved: `projects` (unique) + `projectLinks`
+  (PID → project id) in the response; `projectByPid` in the store. Many PIDs
+  share one project; nothing is duplicated per listener.
+- **Evidence-based association:** absolute command-line paths (quote-aware;
+  relative paths skipped) → bounded parent walk (max 10 levels, dependency
+  directories lifted out) → confirmed root markers (package.json,
+  pyproject.toml, setup.py/cfg, Cargo.toml, go.mod; lockfiles and
+  compose files as supporting-only markers). **Home directories and drive
+  roots are never claimed as project roots.** Confidence: exact (in-root
+  path) / high (dependency-dir lift) / medium (supporting-marker root);
+  no evidence → no project — the honest "Unknown Project".
+- **Package manager:** `packageManager` manifest field wins; one lockfile
+  decides (npm/pnpm/Yarn/Bun); conflicting lockfiles → honest `Ambiguous`.
+- **Start-command inference:** command line ↔ package.json script mapping
+  yields `npm run dev` / `pnpm dev` (manager prefix only with manager
+  evidence, else the underlying command); unmapped command lines report
+  verbatim as medium; nothing is fabricated.
+- **Cache:** content-addressed on (executable path, command line) — warm
+  cycles do zero filesystem work; bounded; the manual Refresh button passes
+  `bypassProjectCache: true` to re-read markers, manifests and the Git
+  branch from disk.
+- **Frontend:** Projects page is real (project cards with root, branch,
+  package manager, start command, confidence, per-process ports, CPU/RAM,
+  expandable evidence details; unknown processes grouped honestly);
+  Dashboard rows gained a project badge and the Projects summary card went
+  live; Ports gained a Project column and project/branch-aware search;
+  Services rows show the owning project with its confidence.
+
+**Verification (all passed):**
+
+- 141 Rust tests (52 new project-engine tests incl. temp-dir synthetic
+  trees: nested node_modules resolution, walk bounds, package-manager
+  matrix, script mapping, worktree files, multi-PID grouping, sibling
+  separation, cache cold/warm/bypass/invalidation); all Phase 1–3 tests
+  untouched and green.
+- Live LocalStack verification: vite :1420 (PID from CIM: command line
+  `D:\Projects\localstack\node_modules\.bin\..\vite\bin\vite.js`) resolved
+  to **localstack-control-center**, root `D:\Projects\localstack`, Git
+  branch **master** (matches `git rev-parse` + `git branch --show-current`),
+  package manager **npm** (matches the sole package-lock.json), package
+  name `localstack-control-center` (matches package.json), start command
+  **npm run dev** (from the real `dev: vite` script) — association
+  confidence High with the full evidence chain.
+- PostgreSQL (PID 16752) stayed **project-unknown** — no fabricated project
+  ownership for services launched outside a source project.
+- A sibling project (crypto-intelligence-platform, branch phase3-recovery)
+  resolved independently with `exact` in-root confidence — siblings are not
+  merged.
+- Perf: full cycle 20–29 ms cold at 45 listeners / 23 PIDs; warm cycles do
+  no filesystem work.
+- Desktop app ran the Phase 4 binary; project identities reached the UI.
+  `npm run typecheck`, `npm run build`, `cargo check`, `cargo test` all
+  green.
+
+**Known limitations:** association requires command-line path evidence
+(protected processes with unreadable command lines stay project-unknown);
+Git branch changes surface on the next cache invalidation (command-line
+change or manual refresh), not on the 3 s poll; Python/Rust/Go start-command
+inference reports the observed command line (no ecosystem equivalent of
+`npm run`); `.git` file worktrees are supported for branch reading, but
+`gitdir`-relative edge cases beyond the documented layout are untested.
 
 ## Phase 5 — Service Control
 
