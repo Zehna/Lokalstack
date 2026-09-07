@@ -102,6 +102,12 @@ searching for `invoke(` finds exactly one directory.
 | `get_port_listeners` | `PortListenersResponse` — listeners + process intelligence + service identities + project resolution + control capabilities | 1–5  |
 | `end_process` | user-confirmed End Process of an opaque revalidated control target (denylist recomputed at action time) | 5 |
 | `open_service_url` | open a snapshot-derived localhost URL in the default browser | 5 |
+| `get_workspace_candidates` | backend-derived launch candidates for a project root (read-only) | 6 |
+| `create_workspace` / `remove_workspace` | explicit workspace creation from derived candidates / removal | 6 |
+| `list_workspaces` | workspace views incl. derived status + managed process state | 6 |
+| `start_managed_service` / `stop_managed_service` / `restart_managed_service` | managed lifecycle actions on opaque ids (`force` only after a graceful timeout) | 6 |
+| `start_workspace_services` / `stop_workspace_services` | workspace-level start (managed only, role order) / stop (managed registry only) | 6 |
+| `get_service_logs` | incremental bounded log lines for one managed process | 6 |
 
 ## 5. Rust feature modules
 
@@ -115,7 +121,7 @@ responsibility:
 | `intelligence`| Evidence-based service & framework classification       | 3    |
 | `project`     | Project resolution from process evidence (markers, Git, package manager) | 4    |
 | `health`      | Localhost health probes and per-service health state   | 5+    |
-| `workspace`  | Group services into development workspaces             | 6     |
+| `workspace`  | Managed workspaces: launch specs, lifecycle, logs      | 6     |
 | `control`    | Explicit, user-confirmed service control actions       | 5     |
 | `conflicts`  | Detect and explain port conflicts                      | 7     |
 | `ai`         | Detect local AI runtimes (Ollama, llama.cpp, ...)      | 8     |
@@ -418,21 +424,6 @@ sources `command_path`, `marker`, `package_json`, `lockfile`, `start_command`,
 `git_root`, `pyproject`, `cargo_manifest`, `go_mod`.
 
 **Identity separation.** The response carries `projects` (unique
-identities) + `projectLinks` (PID → project id); the frontend maps them to
-`projectByPid`. One project shared by many PIDs (vite + the desktop binary)
-references one identity; unrelated sibling projects stay separate because
-the association requires root-marker evidence, not a shared parent folder.
-
-**Caching.** Resolution is content-addressed on *(executable path, command
-line)* — exactly the inputs that determine the outcome. Warm cycles do zero
-filesystem work; the cache is bounded (cleared at 256 entries). Invalidation:
-command-line change, cache eviction, or the manual Refresh button, which
-passes `bypassProjectCache: true` to re-read markers, manifests, and the Git
-branch from disk. Between manual refreshes a branch change is picked up on
-the next invalidation — a documented trade-off that keeps 3-second polling
-filesystem-free.
-
-## Data flow (implemented for port + process + service + project discovery, Phase 1–4)
 
 ```
 Rust: discovery/windows.rs (TCP FFI) ──► ports.rs (normalize) ─┐
@@ -465,6 +456,23 @@ React ◄─ stores/portsStore (listeners · processByPid · serviceByPid · pro
 - A server that starts or stops is reflected automatically within one poll —
   no user action required.
 
+### Managed-workspace data flow (Phase 6)
+
+```
+React (WorkspacesPage / workspaceStore) ── invoke('create_workspace', { projectRoot })
+      │                                   ◄─ launch candidates (backend-derived)
+      │── invoke('start_managed_service', { launchSpecId })   ← opaque id only
+      │        Rust: lookup trusted spec → revalidate root/program/cwd
+      │              → duplicate + port-conflict preflight → CreateProcessW
+      │              (CREATE_NEW_PROCESS_GROUP) → pipes → log ring
+      │── invoke('get_service_logs', { managedId, afterIndex })  ← incremental
+      │── invoke('stop_managed_service', { managedId, force? })
+      │        Rust: identity revalidation → targeted CTRL_BREAK (known group,
+      │              never 0) → bounded wait → honest state
+      └── monitor thread: readiness (port evidence), exits (identity-checked
+          probes), zombie cleanup — event-ish, 500 ms tick
+```
+
 ## What stays out of scope by design
 
 - No generic network/port scanning of remote or external targets — localhost
@@ -476,11 +484,13 @@ React ◄─ stores/portsStore (listeners · processByPid · serviceByPid · pro
   second confirmation before force. No PID-typed input from the frontend is
   ever accepted, no process tree is ever killed, and no system/database/
   infrastructure process is ever controllable.
-- No restart in Phase 5 — restarting reliably requires orchestration
-  (working directory, environment, stdout/stderr ownership) that belongs to
-  Phase 6 workspaces; `canRestart` is `false` everywhere by design.
+- Restart and workspace orchestration exist **only** for LocalStack-managed
+  processes (Phase 6): trusted backend-derived launch specs, known process
+  groups, identity revalidation at every step. External services can never
+  be restarted or orchestrated, and workspace actions never touch external
+  databases/infrastructure.
 
-## Known limitations (Phase 2–5)
+## Known limitations (Phase 2–6)
 
 - Windows-only. Other platforms get an explicit error, not silent emptiness.
 - TCP only — UDP discovery would be a separate, explicit design.
@@ -523,10 +533,21 @@ React ◄─ stores/portsStore (listeners · processByPid · serviceByPid · pro
 - There is no generic targeted graceful console-stop for externally
   discovered processes (a console-wide `CTRL_BREAK` broadcast would affect
   unrelated processes and is never used); the honest action is a confirmed
-  **End Process**. A future managed process group (Phase 6) may support a
-  targeted signal.
+  **End Process**. LocalStack-**managed** processes (Phase 6) do get a
+  targeted `CTRL_BREAK` against their known process group.
 - Stop targets exactly one process; children spawned by the dev server are
-  intentionally not touched (Phase 5 has no proven parent/child model).
+  intentionally not touched (no proven parent/child model yet — managed
+  launches terminate only their root process, and npm.cmd wrappers may
+  leave grandchildren alive after a stop; a proven tree model is future
+  work).
+- Managed-process state is in-memory only: after an app restart, previously
+  managed services appear as external and are not re-adopted (documented
+  Phase 6 boundary). App exit never kills managed services.
+- Workspace service roles are evidence-derived (`frontend` for known dev
+  servers, otherwise `other`); `database`/`ai`/`worker` roles are reserved
+  for phases that can actually derive them.
+- Logs are bounded in-memory rings (1,000 lines/service, not persisted).
+  Environment variables are inherited, never displayed or logged.
 
 ## See also
 

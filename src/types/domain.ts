@@ -312,6 +312,107 @@ export interface Workspace {
   services: Service[]
 }
 
+/* ------------------------------------------------------------------------
+ * Workspaces (Phase 6) — managed lifecycle
+ * ---------------------------------------------------------------------- */
+
+/** Role of a workspace service. Labels, not assumptions. */
+export type WorkspaceRole = 'frontend' | 'backend' | 'database' | 'ai' | 'worker' | 'other'
+
+/**
+ * One backend-derived launch candidate (shown in the create-workspace
+ * flow). The frontend can only accept or decline a candidate — it can
+ * never edit the program, args, or cwd.
+ */
+export interface LaunchCandidate {
+  role: WorkspaceRole
+  name: string
+  /**
+   * Opaque-ish display shape; the trusted spec is registered server-side
+   * when the workspace is created. Display only.
+   */
+  spec: {
+    program: string
+    args: string[]
+    cwd: string
+    kind: 'exe' | 'batch'
+  }
+  expectedPort?: number
+  /** Where this came from, e.g. `package.json scripts.dev`. */
+  source: string
+}
+
+/** Lifecycle state of one managed process (tagged union from Rust). */
+export type ManagedState =
+  | { state: 'starting' }
+  | { state: 'running' }
+  | { state: 'start_failed'; exit_code: number | null }
+  | { state: 'exited'; exit_code: number | null }
+  | { state: 'stopping' }
+  | { state: 'stopped' }
+  | { state: 'stop_timeout' }
+  | { state: 'degraded' }
+
+/** Derived workspace status. */
+export type WorkspaceStatus =
+  | 'stopped'
+  | 'starting'
+  | 'running'
+  | 'partial'
+  | 'stopping'
+  | 'error'
+  | 'conflict'
+
+/** Live managed-process view (opaque id + display state). */
+export interface ManagedProcessView {
+  managedId: string
+  rootPid: number
+  state: ManagedState
+  startedAt: number
+}
+
+/** One service row in a workspace view. */
+export interface WorkspaceServiceView {
+  id: string
+  name: string
+  role: WorkspaceRole
+  expectedPort: number | null
+  /** Opaque launch-spec id — the only handle for starting this service. */
+  launchSpecId: string
+  source: string
+  managed: ManagedProcessView | null
+}
+
+/** Full workspace as delivered by the backend. */
+export interface WorkspaceView {
+  id: string
+  projectRoot: string
+  name: string
+  status: WorkspaceStatus
+  services: WorkspaceServiceView[]
+}
+
+/** Honest outcome of a managed lifecycle action. */
+export interface ManagedActionOutcome {
+  ok: boolean
+  code: string
+  message: string
+  managedId?: string
+}
+
+/** One captured output line from a managed process. */
+export interface LogLine {
+  at: number
+  stream: 'stdout' | 'stderr'
+  line: string
+}
+
+/** Incremental log fetch result. */
+export interface LogBatch {
+  lines: LogLine[]
+  lastIndex: number
+}
+
 /** Identifier of a view in the desktop shell's left navigation. */
 export type ViewId =
   | 'dashboard'

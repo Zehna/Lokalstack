@@ -72,3 +72,67 @@ export async function endProcess(targetId: string): Promise<StopResult> {
 export async function openServiceUrl(url: string, pid: number | null): Promise<void> {
   return invoke<void>('open_service_url', { url, pid })
 }
+
+/* ------------------------------------------------------------------------
+ * Workspaces (Phase 6) — managed lifecycle
+ * ---------------------------------------------------------------------- */
+
+import type {
+  LaunchCandidate,
+  LogBatch,
+  ManagedActionOutcome,
+  WorkspaceView,
+} from '@/types/domain'
+
+/** Read-only: launch candidates derived from a project root's manifests. */
+export async function getWorkspaceCandidates(projectRoot: string): Promise<LaunchCandidate[]> {
+  return invoke<LaunchCandidate[]>('get_workspace_candidates', { projectRoot })
+}
+
+/** Create a workspace (explicit user action) for a project root. */
+export async function createWorkspace(projectRoot: string): Promise<WorkspaceView> {
+  return invoke<WorkspaceView>('create_workspace', { projectRoot })
+}
+
+/** Remove a workspace (managed processes keep running). */
+export async function removeWorkspace(workspaceId: string): Promise<void> {
+  return invoke<void>('remove_workspace', { workspaceId })
+}
+
+/** All workspaces with live managed-state views. */
+export async function listWorkspaces(): Promise<WorkspaceView[]> {
+  return invoke<WorkspaceView[]>('list_workspaces')
+}
+
+/** START one workspace service by opaque launch-spec id. */
+export async function startManagedService(launchSpecId: string): Promise<ManagedActionOutcome> {
+  return invoke<ManagedActionOutcome>('start_managed_service', { launchSpecId })
+}
+
+/** STOP one managed service; `force` only after a graceful timeout. */
+export async function stopManagedService(
+  managedId: string,
+  force = false,
+): Promise<ManagedActionOutcome> {
+  return invoke<ManagedActionOutcome>('stop_managed_service', { managedId, force })
+}
+
+/** RESTART one managed service from its trusted launch spec. */
+export async function restartManagedService(managedId: string): Promise<ManagedActionOutcome> {
+  return invoke<ManagedActionOutcome>('restart_managed_service', { managedId })
+}
+
+/** START WORKSPACE: managed services only, in deterministic role order. */
+export async function startWorkspaceServices(workspaceId: string): Promise<ManagedActionOutcome[]> {
+  return invoke<ManagedActionOutcome[]>('start_workspace_services', { workspaceId })
+}
+
+/** STOP MANAGED: only registered managed processes of the workspace. */
+export async function stopWorkspaceServices(workspaceId: string): Promise<ManagedActionOutcome[]> {
+  return invoke<ManagedActionOutcome[]>('stop_workspace_services', { workspaceId })
+}
+
+/** Incremental logs for one managed service. */
+export async function getServiceLogs(managedId: string, afterIndex?: number): Promise<LogBatch> {
+  return invoke<LogBatch>('get_service_logs', { managedId, afterIndex })
+}

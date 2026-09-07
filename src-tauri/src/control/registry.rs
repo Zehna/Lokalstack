@@ -39,7 +39,7 @@ pub(crate) const REGISTRY_CAPACITY: usize = 1024;
 pub(crate) const TARGET_TTL: Duration = Duration::from_secs(15 * 60);
 
 /// Per-boot random key so ids cannot be predicted across runs.
-fn boot_key() -> [u8; 32] {
+pub(crate) fn boot_key() -> [u8; 32] {
     use std::sync::OnceLock;
     static KEY: OnceLock<[u8; 32]> = OnceLock::new();
     *KEY.get_or_init(|| {
@@ -65,7 +65,7 @@ fn boot_key() -> [u8; 32] {
 
 /// BLAKE3-256 over `input` (the audited `blake3` crate — opaque ids are a
 /// security boundary, so no hand-rolled hash).
-fn blake3_256(input: &[u8]) -> [u8; 32] {
+pub(crate) fn blake3_256(input: &[u8]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(input);
     *hasher.finalize().as_bytes()

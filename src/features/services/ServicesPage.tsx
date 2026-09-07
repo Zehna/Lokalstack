@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { ControlActions } from '@/app/components/ControlActions'
 import { usePortListeners } from '@/hooks'
 import { usePortsStore } from '@/stores/portsStore'
+import { useWorkspaceStore } from '@/stores/workspaceStore'
 import type { ServiceCategory } from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 import { groupListenersByProcess } from './groupProcesses'
@@ -35,6 +36,17 @@ const CATEGORY_FILTERS: ReadonlyArray<{ value: ServiceCategory | 'all'; label: s
  * ("Node.js", "Python") when framework evidence is missing.
  */
 export function ServicesPage() {
+  const workspaces = useWorkspaceStore((state) => state.workspaces)
+  const loadWorkspaces = useWorkspaceStore((state) => state.load)
+  useEffect(() => {
+    void loadWorkspaces()
+  }, [loadWorkspaces])
+  // Managed root PIDs — any discovered PID in this set is LocalStack-managed.
+  const managedPids = new Set(
+    workspaces.flatMap((w) =>
+      w.services.filter((s) => s.managed !== null).map((s) => s.managed?.rootPid ?? 0),
+    ),
+  )
   usePortListeners()
   const listeners = usePortsStore((state) => state.listeners)
   const processByPid = usePortsStore((state) => state.processByPid)
@@ -149,6 +161,23 @@ export function ServicesPage() {
                   >
                     {group.displayName}
                   </button>
+
+                  {/* Managed vs external — LocalStack lifecycle knowledge. */}
+                  {managedPids.has(group.pid) ? (
+                    <span
+                      className="rounded border border-sky-900/60 bg-sky-950/40 px-1.5 py-0.5 text-xs text-sky-400"
+                      title="This process was launched by LocalStack — it supports graceful stop and restart"
+                    >
+                      MANAGED
+                    </span>
+                  ) : (
+                    <span
+                      className="rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-xs text-slate-500"
+                      title="Discovered on the machine — not launched by LocalStack"
+                    >
+                      EXTERNAL
+                    </span>
+                  )}
 
                   {group.identity !== null && (
                     <>

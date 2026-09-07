@@ -1,4 +1,4 @@
-import { RefreshCw, Square, SquareX } from 'lucide-react'
+import { RefreshCw, Square, SquareX, TriangleAlert } from 'lucide-react'
 
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { useControlStore } from '@/stores/controlStore'
@@ -7,11 +7,14 @@ import { usePortsStore } from '@/stores/portsStore'
 import { formatTime } from '@/utils/format'
 
 function actionIcon(action: string) {
-  if (action === 'force_stop') {
+  if (action === 'force_stop' || action === 'service_force_stop' || action === 'startup_failure') {
     return <SquareX className="h-3.5 w-3.5 text-red-400" strokeWidth={1.8} />
   }
-  if (action === 'stop') {
+  if (action === 'stop' || action === 'service_stop' || action === 'workspace_stop') {
     return <Square className="h-3.5 w-3.5 text-amber-400" strokeWidth={1.8} />
+  }
+  if (action === 'port_conflict') {
+    return <TriangleAlert className="h-3.5 w-3.5 text-amber-400" strokeWidth={1.8} />
   }
   return <RefreshCw className="h-3.5 w-3.5 text-sky-400" strokeWidth={1.8} />
 }
@@ -26,6 +29,16 @@ const ACTION_LABELS: Record<string, string> = {
   stop: 'Stop',
   force_stop: 'Force stop',
   open: 'Open',
+  // Phase 6 managed-lifecycle events share the audit trail.
+  workspace_start: 'Start ws',
+  workspace_stop: 'Stop ws',
+  service_start: 'Start svc',
+  service_stop: 'Stop svc',
+  service_force_stop: 'Force svc',
+  service_restart: 'Restart',
+  workspace_create: 'Create ws',
+  startup_failure: 'Start fail',
+  port_conflict: 'Conflict',
 }
 
 /**

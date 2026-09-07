@@ -352,12 +352,91 @@ processes of a stopped dev server are intentionally not managed; stop is
 the only lifecycle action — start/restart wait for Phase 6 orchestration;
 history is in-memory per session (persistence belongs to Phase 10).
 
-## Phase 6 — Workspaces
+## Phase 6 — Managed Workspaces & Service Lifecycle ✅
 
-**Goal:** group related services into development workspaces.
+**Goal:** LocalStack launches and manages development services itself — the
+first phase with lifecycle write capability, built on the Phase 5 trust
+model.
 
-- Cluster services by project relationships and shared roots.
-- Workspace views: "what belongs together is shown together."
+**Implemented:**
+
+- **Managed vs external, enforced everywhere.** A managed service is one
+  LocalStack launched (it owns the trusted launch spec, root PID + creation
+  identity, and the known Windows process-group id). External services keep
+  every Phase 1–5 rule: no graceful stop, End Process only via the opaque
+  control-target registry, never restarted, never orchestrated. Workspace
+  actions never touch external databases or infrastructure.
+- **Workspace domain.** `Workspace { id, projectRoot, name, services,
+  status }` with `WorkspaceService { id, name, role, expectedPort,
+  launchSpecId, source, managedProcess }`. Creation is **explicit** in the
+  UI: the backend derives launch candidates from trusted project metadata
+  only (package.json `dev`/`start`/`serve` scripts via the detected package
+  manager, `cargo run`, `go run .`), the user confirms which become managed
+  services. Roles are evidence-derived (known dev-server tools →
+  `frontend`, otherwise honest `other`).
+- **Opaque launch specs.** The frontend sends only a `launchSpecId`; Rust
+  stores the trusted spec (bounded BLAKE3-id registry, ids never survive an
+  app restart) and revalidates root/program/cwd at launch time
+  (`STALE_LAUNCH_SPEC` on drift). No cwd/program/args/env ever cross the
+  boundary from the frontend.
+- **Windows launching.** `CreateProcessW` with
+  `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`, piped stdout/stderr into
+  bounded per-service rings (1,000 lines, incremental index-based polling).
+  Batch launchers (`npm.cmd`) run through one scoped `cmd.exe /d /s /c` with
+  every argument individually quoted. Program resolution searches PATH with
+  proper PATHEXT semantics (a real bug the live test caught).
+- **Graceful stop, finally real — for managed processes only.** Targeted
+  `CTRL_BREAK_EVENT` to the **known group id** (== root PID by construction;
+  never group 0): attach to the child's own console when needed, send, wait
+  bounded 5 s → `Stopped` or honest `StopTimeout`. Force Stop is a separate
+  confirmed action, gated on the timeout, identity-revalidated, root-process
+  only. Externally discovered processes never receive console events.
+- **Restart** (managed-only): graceful stop → relaunch from the same trusted
+  spec → genuinely new PID/creation identity/group; the old managed id
+  cannot act on the new process. Graceful timeout aborts a restart — no
+  silent force-and-restart.
+- **Preflight.** Duplicate-launch detection (managed registry + listener
+  table → `ALREADY_RUNNING` / honest external-instance message) and
+  port-conflict preflight (`PORT_CONFLICT` with the owning PID — no
+  automatic port changes).
+- **Honest state machine.** `Starting → Running` only when the expected
+  port (explicit `--port` evidence only) actually listens; alive-but-no-port
+  past 25 s → `Degraded`; immediate death → `StartFailed` with the real exit
+  code. No-port services go `Running` after a 3 s alive-grace. A monitor
+  thread (500 ms tick, identity-checked liveness probes — no retained child
+  handles) captures exits and cleans terminal entries (bounded registry, no
+  zombies).
+- **Workspace actions.** Start Workspace (managed services only, in
+  deterministic role order), Stop Managed (managed registry entries only),
+  Restart Managed (sequential, partial-failure honest). Workspace status is
+  derived from managed states only (`stopped/starting/running/partial/
+  stopping/error/conflict`) — external dependencies are never "stopped".
+- **Frontend.** Real Workspaces page (create flow with detected candidates,
+  service cards, Logs panel with auto-scroll and stream tags, per-service
+  Start/Stop/Restart/Logs, workspace-level buttons), Dashboard workspace
+  summary card, Services page MANAGED/EXTERNAL badges, History records
+  lifecycle events.
+
+**Verification (all passed):**
+
+- 212 Rust tests (43 new): candidate derivation, spec validation, program
+  resolution, duplicate/port-conflict preflight, status derivation,
+  ordering, log-ring bounds, state transitions, registry bounds/opaque-id
+  semantics, argument quoting.
+- Live managed-lifecycle test (`live_managed_lifecycle_disposable_child`,
+  `#[ignore]`d, disposable node child): launch → known group id == root PID
+  → stdout captured → port listens (STARTING→RUNNING) → targeted
+  CTRL_BREAK stop → relaunch → new identity → old identity refused → force
+  with correct identity works. No group-0 broadcasts.
+- `npm run typecheck`, `npm run build`, `cargo check` (0 warnings),
+  `cargo test` all green; desktop app with the workspace UI verified.
+
+**Known limitations:** managed state is in-memory — after an app restart,
+previously managed services appear external and are not re-adopted (app
+exit never kills them); children/grandchildren of a stopped managed root
+are not managed (npm.cmd wrappers may leave grandchildren); roles beyond
+`frontend`/`other` await evidence sources; logs are not persisted; env is
+inherited (no .env integration yet).
 
 ## Phase 7 — Port Conflict Engine
 

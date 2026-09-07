@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Activity, Boxes, TriangleAlert } from 'lucide-react'
 
 import { RefreshButton } from '@/app/components/RefreshButton'
@@ -5,6 +6,7 @@ import { SummaryCard } from './components/SummaryCard'
 import { usePortListeners } from '@/hooks'
 import { useAppStore } from '@/stores/appStore'
 import { usePortsStore } from '@/stores/portsStore'
+import { useWorkspaceStore } from '@/stores/workspaceStore'
 import type { PortListener, ProcessInfo, ProjectIdentity, ServiceIdentity } from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 
@@ -103,6 +105,11 @@ function ListenerRow({
  */
 export function DashboardPage() {
   usePortListeners()
+  const workspaces = useWorkspaceStore((state) => state.workspaces)
+  const loadWorkspaces = useWorkspaceStore((state) => state.load)
+  useEffect(() => {
+    void loadWorkspaces()
+  }, [loadWorkspaces])
   const listeners = usePortsStore((state) => state.listeners)
   const processByPid = usePortsStore((state) => state.processByPid)
   const serviceByPid = usePortsStore((state) => state.serviceByPid)
@@ -131,7 +138,14 @@ export function DashboardPage() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 xl:grid-cols-5">
+        <SummaryCard
+          title="Workspaces"
+          icon={<Boxes className="h-4 w-4 text-teal-400" strokeWidth={1.8} />}
+          value={loading ? '…' : String(workspaces.length)}
+          detail={`${workspaces.filter((w) => w.status === 'running').length} running · ${workspaces.filter((w) => w.status === 'partial').length} partial`}
+          footer="Managed service groups"
+        />
         <SummaryCard
           title="Services"
           icon={<Activity className="h-4 w-4 text-sky-400" strokeWidth={1.8} />}

@@ -10,7 +10,19 @@ export interface ControlHistoryEntry {
   /** Unix epoch ms when the action was attempted. */
   at: number
   /** `end_process` | `open` — the action performed. */
-  action: 'end_process' | 'open'
+  action:
+    | 'end_process'
+    | 'open'
+    // Phase 6 managed-lifecycle events share the same audit trail.
+    | 'workspace_start'
+    | 'workspace_stop'
+    | 'service_start'
+    | 'service_stop'
+    | 'service_force_stop'
+    | 'service_restart'
+    | 'workspace_create'
+    | 'startup_failure'
+    | 'port_conflict'
   /** What the action targeted (human-facing display name). */
   subject: string
   /** PID when the action had one (advisory, from the snapshot). */

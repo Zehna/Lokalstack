@@ -733,19 +733,19 @@ mod tests {
         assert!(err.starts_with(UNKNOWN_TARGET));
     }
 
-    /// REGRESSION GUARD: `GenerateConsoleCtrlEvent` must never return to
-    /// this crate. Group id 0 broadcasts to every process on the attached
-    /// console; LocalStack does not own those consoles. Source-level guard
-    /// so the unsafe pattern cannot be reintroduced silently.
-    //
-    // Reminder of the audit's forged-input scenarios, all covered by the
-    // chain: forged service/project metadata cannot turn a denied process
-    // into an allowed one (hints are backend-stored only; the command takes
-    // a single opaque id), a system process stays denied at action time
-    // (`denylist_refusal` re-runs on fresh data), and no operation accepts
-    // a raw PID-only request.
+    /// REGRESSION GUARD: `GenerateConsoleCtrlEvent` must never be used in
+    /// the **external-process control path**. The Phase 5 audit established
+    /// that group id 0 broadcasts to every process on the attached console.
+    /// Phase 6 *does* legitimately use a **targeted** CTRL_BREAK — only in
+    /// `src/workspace/windows.rs`, only against the group id LocalStack
+    /// itself created at launch (`CREATE_NEW_PROCESS_GROUP`), and only with
+    /// an explicit group-0 structural refusal. This guard pins exactly
+    /// that: any console API outside the managed-workspace FFI fails the
+    /// build.
     #[test]
-    fn no_console_broadcast_anywhere_in_the_crate() {
+    fn no_console_broadcast_outside_managed_workspace_ffi() {
+        // The only file allowed to reference console control APIs.
+        const ALLOWED: &str = "workspace\\windows.rs";
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut offenders = Vec::new();
         let mut stack = vec![src];
@@ -808,7 +808,13 @@ mod tests {
                         || no_strings.contains("AttachConsole")
                         || no_strings.contains("CTRL_BREAK_EVENT")
                     {
-                        offenders.push(path.display().to_string());
+                        // The managed-workspace FFI is the sanctioned home
+                        // of targeted console events (known group, group 0
+                        // refused structurally). Anywhere else is a bug.
+                        let rendered = path.display().to_string();
+                        if !rendered.replace('/', "\\").ends_with(ALLOWED) {
+                            offenders.push(rendered);
+                        }
                     }
                 }
             }
