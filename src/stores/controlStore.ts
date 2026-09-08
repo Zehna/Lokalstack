@@ -23,6 +23,14 @@ export interface ControlHistoryEntry {
     | 'workspace_create'
     | 'startup_failure'
     | 'port_conflict'
+    // Phase 7 conflict/dependency intelligence (transition events).
+    | 'conflict_detected'
+    | 'conflict_resolved'
+    | 'dependency_unavailable'
+    | 'dependency_recovered'
+    | 'workspace_blocked'
+    | 'workspace_recovered'
+    | 'free_port_suggested'
   /** What the action targeted (human-facing display name). */
   subject: string
   /** PID when the action had one (advisory, from the snapshot). */

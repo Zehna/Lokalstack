@@ -438,13 +438,29 @@ are not managed (npm.cmd wrappers may leave grandchildren); roles beyond
 `frontend`/`other` await evidence sources; logs are not persisted; env is
 inherited (no .env integration yet).
 
-## Phase 7 — Port Conflict Engine
+## Phase 7 — Port Conflict & Dependency Intelligence ✅
 
-**Goal:** explain and resolve conflicts.
+**Goal:** explain and resolve conflicts. **Status: complete and verified.**
 
-- Detect competing listeners per port, present involved processes and
-  resolution options (suggestions only — the user acts, the app never kills
-  processes silently).
+- **7A Port Conflict Engine** (`src-tauri/src/conflicts/`): evidence-based
+  ownership (`PortOwner`: PID, process/service/project, managed/external),
+  classification incl. `already_running` (same managed instance is not a
+  conflict), `same_project_external` handled honestly, bind-scope semantics
+  (wildcard/loopback/specific × IPv4/IPv6, dual-stack always *potential*),
+  and a bounded advisory Free Port Finder (≤ 100 examined, ≤ 5 suggested,
+  no bind test, no configuration mutation).
+- **7B Dependency / Readiness Engine** (`src-tauri/src/dependencies/`):
+  user-confirmed dependency edges (`service` / `external_service` /
+  `tcp_port` / `http_endpoint`, required vs optional), cycle detection with
+  the reported path, topological start order for managed services,
+  deterministic readiness with documented precedence and structured
+  root-cause issues; `available` = listening, never a health claim.
+- **Preflight:** workspace/service start evaluates dependencies + conflicts
+  before launching; blocking conflicts refuse with `PORT_CONFLICT`; owners
+  are never auto-stopped; external instances are reported, not adopted.
+- **UI:** conflict dialog with owner details + advisory alternatives,
+  dependency badges, readiness issues on the workspace page, dashboard
+  conflict/blocked cards, transition-deduped history events.
 
 ## Phase 8 — AI Service Detection
 

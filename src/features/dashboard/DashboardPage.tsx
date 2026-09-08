@@ -5,6 +5,7 @@ import { RefreshButton } from '@/app/components/RefreshButton'
 import { SummaryCard } from './components/SummaryCard'
 import { usePortListeners } from '@/hooks'
 import { useAppStore } from '@/stores/appStore'
+import { useConflictsStore } from '@/stores/conflictsStore'
 import { usePortsStore } from '@/stores/portsStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import type { PortListener, ProcessInfo, ProjectIdentity, ServiceIdentity } from '@/types/domain'
@@ -120,6 +121,11 @@ export function DashboardPage() {
   const lastUpdated = usePortsStore((state) => state.lastUpdated)
   const durationMs = usePortsStore((state) => state.durationMs)
   const refreshListeners = usePortsStore((state) => state.refreshListeners)
+  const loadConflicts = useConflictsStore((state) => state.load)
+  const readiness = useConflictsStore((state) => state.readiness)
+  useEffect(() => {
+    void loadConflicts()
+  }, [loadConflicts])
 
   const listenerCount = listeners.length
   const projects = usePortsStore((state) => state.projects)
@@ -163,9 +169,24 @@ export function DashboardPage() {
         <SummaryCard
           title="Port Conflicts"
           icon={<TriangleAlert className="h-4 w-4 text-amber-400" strokeWidth={1.8} />}
-          value={loading ? '…' : '0'}
-          detail="Phase 7 engine"
-          footer="Ports claimed by multiple listeners"
+          value={loading ? '…' : String(
+            readiness.reduce((count, view) => count + view.conflicts.length, 0),
+          )}
+          detail="blocking workspace launches"
+          footer="Ports claimed by an owner that is not the requester"
+        />
+        <SummaryCard
+          title="Blocked / Deps Down"
+          icon={<TriangleAlert className="h-4 w-4 text-red-400" strokeWidth={1.8} />}
+          value={loading ? '…' : String(
+            readiness.filter((view) => view.status === 'blocked').length,
+          )}
+          detail={`${readiness.reduce(
+            (count, view) =>
+              count + view.dependencies.filter((d) => d.state === 'unavailable').length,
+            0,
+          )} dependencies unavailable`}
+          footer="Required dependencies or ports blocking readiness"
         />
         <SummaryCard
           title="System Usage"

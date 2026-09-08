@@ -9,7 +9,19 @@
 
 import { invoke } from '@tauri-apps/api/core'
 
-import type { PortListenersResponse, StopResult } from '@/types/domain'
+import type {
+  DependencyTarget,
+  LaunchCandidate,
+  LogBatch,
+  ManagedActionOutcome,
+  PortCandidate,
+  PortConflictReport,
+  PortListenersResponse,
+  StopResult,
+  TargetOption,
+  WorkspaceReadinessView,
+  WorkspaceView,
+} from '@/types/domain'
 
 /** Shape returned by the Rust `get_port_listeners` command. */
 interface RawPortListenersResponse {
@@ -77,13 +89,6 @@ export async function openServiceUrl(url: string, pid: number | null): Promise<v
  * Workspaces (Phase 6) — managed lifecycle
  * ---------------------------------------------------------------------- */
 
-import type {
-  LaunchCandidate,
-  LogBatch,
-  ManagedActionOutcome,
-  WorkspaceView,
-} from '@/types/domain'
-
 /** Read-only: launch candidates derived from a project root's manifests. */
 export async function getWorkspaceCandidates(projectRoot: string): Promise<LaunchCandidate[]> {
   return invoke<LaunchCandidate[]>('get_workspace_candidates', { projectRoot })
@@ -135,4 +140,43 @@ export async function stopWorkspaceServices(workspaceId: string): Promise<Manage
 /** Incremental logs for one managed service. */
 export async function getServiceLogs(managedId: string, afterIndex?: number): Promise<LogBatch> {
   return invoke<LogBatch>('get_service_logs', { managedId, afterIndex })
+}
+
+/* ------------------------------------------------------------------------
+ * Phase 7 — conflicts + dependencies (all read-only or user-confirmed)
+ * ---------------------------------------------------------------------- */
+
+/** Evaluate who owns `port` right now and whether a service could bind it. */
+export async function evaluatePort(port: number): Promise<PortConflictReport> {
+  return invoke<PortConflictReport>('evaluate_port', { port })
+}
+
+/** Advisory free-port alternatives near `preferred` (bounded, read-only). */
+export async function findFreePorts(preferred: number, count?: number): Promise<PortCandidate[]> {
+  return invoke<PortCandidate[]>('find_free_ports', { preferred, count })
+}
+
+/** Readiness + conflicts + dependencies for every workspace (one poll). */
+export async function getWorkspacesReadiness(): Promise<WorkspaceReadinessView[]> {
+  return invoke<WorkspaceReadinessView[]>('get_workspaces_readiness')
+}
+
+/** Backend-validated targets the UI may offer when adding a dependency. */
+export async function listDependencyTargets(workspaceId: string): Promise<TargetOption[]> {
+  return invoke<TargetOption[]>('list_dependency_targets', { workspaceId })
+}
+
+/** Add a user-confirmed dependency edge (validated server-side). */
+export async function addWorkspaceDependency(
+  workspaceId: string,
+  sourceServiceId: string,
+  target: DependencyTarget,
+  required = true,
+): Promise<void> {
+  await invoke('add_workspace_dependency', { workspaceId, sourceServiceId, target, required })
+}
+
+/** Remove a dependency edge. */
+export async function removeWorkspaceDependency(workspaceId: string, dependencyId: string): Promise<void> {
+  await invoke('remove_workspace_dependency', { workspaceId, dependencyId })
 }

@@ -473,6 +473,82 @@ React (WorkspacesPage / workspaceStore) ── invoke('create_workspace', { proj
           probes), zombie cleanup — event-ish, 500 ms tick
 ```
 
+### Conflict & dependency intelligence (Phase 7)
+
+Two separate engines feed one readiness view:
+
+```
+Workspace state ─┬─ conflicts/    (Phase 7A)  Port Conflict Engine
+                 │     rules.rs     — pure bind semantics + classification
+                 │     free_port.rs — pure bounded free-port finder
+                 │     mod.rs       — owner resolution from a live snapshot
+                 │                    + Tauri commands (evaluate_port,
+                 │                    find_free_ports)
+                 └─ dependencies/ (Phase 7B) Dependency / Readiness Engine
+                       graph.rs     — cycle detection + topological order
+                       readiness.rs — deterministic readiness + root causes
+                       mod.rs       — dependency storage + Tauri commands
+```
+
+**Port conflicts (7A).** Every evaluation starts from a *fresh* listener
+snapshot — ownership is never cached (spec §33). The owner of each listener
+is resolved through the same one-shot sampling used by discovery (process
+name → service identity → project identity → managed-registry lookup), and
+fields that could not be resolved stay absent rather than being invented.
+A `PortOwner` carries pid, process/service/project names, and the
+`managed`/`external` lifecycle. Classification (`no_conflict`,
+`already_running`, `same_project_external`, `same_project_managed`,
+`other_project`, `unknown_owner`, `dual_stack_equivalent`,
+`reserved_or_unverifiable`) never uses port numbers as evidence — the same
+port held by the *exact same managed service* is `already_running` (info),
+not a conflict. Bind semantics are modeled as scopes (wildcard/loopback/
+specific per family): same-family overlap is blocking, cross-family pairs
+are disjoint, and IPv6-wildcard dual-stack behavior is **never claimed safe**
+— it is `potential` with an explicit "bind semantics cannot be verified"
+message. The Free Port Finder is advisory-only and bounded: at most 100
+consecutive ports are examined, at most 5 suggestions are returned, the
+occupied preferred port leads the Used list, and no configuration is ever
+edited and no bind test is performed.
+
+**Dependencies (7B).** Edges are created only from user-confirmed mappings
+(backend-validated: source and target service must belong to the workspace,
+self-edges are refused, HTTP endpoints are localhost-only). Targets are
+tagged (`service`, `external_service`, `tcp_port`, `http_endpoint`); each
+carries `required` — required-unavailable blocks readiness, optional-unavailable
+warns. `DependencyState.available` claims only that the endpoint is
+*listening*; the issue text says explicitly that a listening port is not a
+health claim. The graph engine detects cycles (reporting the path, e.g.
+`a → b → a`, as an ERROR issue) and derives a topological start order for
+managed services; external dependencies are sinks and never auto-started.
+
+**Readiness.** `evaluate_all` joins managed states, dependency states, and
+conflict verdicts into one deterministic status per workspace with a
+documented precedence: `error` (cycle / start-failed / stop-timeout) →
+`conflict` (blocking port occupied) → `blocked` (required dependency down) →
+`starting` → `ready` (every managed service fully Running) → `partial`
+(some running, or any Degraded) → `stopped`. Every non-ready status carries
+structured `ReadinessIssue`s (`PORT_OCCUPIED`, `DEPENDENCY_UNAVAILABLE`,
+`START_TIMEOUT`, `DEPENDENCY_CYCLE`, …) with stable identities (code +
+service/dependency ids + port) so the history layer can record
+**transitions** — one event per change, never per poll.
+
+**Preflight integration.** Workspace/service start runs the conflict engine
+before `CreateProcessW`: a blocking conflict refuses the launch with
+`PORT_CONFLICT` (the owner is never stopped automatically), an
+external-instance condition reports honestly, and a required dependency
+that is down gates the start (conservative: the workspace preflight does
+not partially auto-start around a blocked dependency).
+
+```
+React (WorkspacesPage / conflictsStore) ── invoke('get_workspaces_readiness')
+      │                                   ◄─ readiness + issues + deps + conflicts
+      │── invoke('evaluate_port', { port })  ◄─ owner report + resolutions
+      │── invoke('find_free_ports', { preferred })  ◄─ bounded advisory list
+      │── invoke('add_workspace_dependency', …)  ← user-confirmed, validated
+      └── conflict dialog: owner details + advisory alternatives; no
+          destructive action is ever automatic
+```
+
 ## What stays out of scope by design
 
 - No generic network/port scanning of remote or external targets — localhost
@@ -490,7 +566,7 @@ React (WorkspacesPage / workspaceStore) ── invoke('create_workspace', { proj
   be restarted or orchestrated, and workspace actions never touch external
   databases/infrastructure.
 
-## Known limitations (Phase 2–6)
+## Known limitations (Phase 2–7)
 
 - Windows-only. Other platforms get an explicit error, not silent emptiness.
 - TCP only — UDP discovery would be a separate, explicit design.
@@ -548,6 +624,16 @@ React (WorkspacesPage / workspaceStore) ── invoke('create_workspace', { proj
   for phases that can actually derive them.
 - Logs are bounded in-memory rings (1,000 lines/service, not persisted).
   Environment variables are inherited, never displayed or logged.
+- Conflict evaluation predicts bind compatibility from the TCP table only;
+  dual-stack behavior cannot be verified without actually binding, so it is
+  always reported as `potential`, never safe.
+- Dependency edges exist only when a user (or backend metadata) declared
+  them — no convention-based inference ("port 5432 ⇒ PostgreSQL dependency")
+  is performed, so a workspace with no declared dependencies shows none.
+- Dependency `available` means *listening*; real HTTP health checks are a
+  later phase and are never faked.
+- History is per-session and transition-deduped; repeated identical issues
+  do not spam the log, but there is no persistence yet.
 
 ## See also
 

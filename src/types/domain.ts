@@ -423,3 +423,141 @@ export type ViewId =
   | 'ai-services'
   | 'history'
   | 'settings'
+
+/* ------------------------------------------------------------------------
+ * Port conflicts (Phase 7A) — evidence-based ownership + advisory options
+ * ---------------------------------------------------------------------- */
+
+/** Classified conflict outcome (mirrors Rust `ConflictKind`). */
+export type ConflictKind =
+  | 'no_conflict'
+  | 'already_running'
+  | 'same_project_external'
+  | 'same_project_managed'
+  | 'other_project'
+  | 'unknown_owner'
+  | 'dual_stack_equivalent'
+  | 'reserved_or_unverifiable'
+
+/** How badly the conflict blocks a launch (mirrors Rust `ConflictSeverity`). */
+export type ConflictSeverity = 'info' | 'potential' | 'blocking'
+
+/** Lifecycle of the owning process relative to LocalStack. */
+export type OwnerLifecycle = 'managed' | 'external'
+
+/** Normalized owner descriptor — fields stay absent when unresolved. */
+export interface PortOwner {
+  pid: number
+  processName?: string
+  serviceDisplayName?: string
+  projectId?: string
+  projectName?: string
+  lifecycle: OwnerLifecycle
+  managedWorkspace?: string
+  managedService?: string
+}
+
+/** One observed listener on the requested port. */
+export interface ListenerSummary {
+  ipVersion: number
+  address: string
+  pid: number
+}
+
+/** Who is asking for the port (backend-derived identity of the requester). */
+export interface RequestedBy {
+  workspaceId?: string
+  workspaceName?: string
+  serviceId?: string
+  serviceName?: string
+  projectId?: string
+}
+
+/** Options the UI may offer — all backed by real capabilities. */
+export type ResolutionOption =
+  | 'open_existing'
+  | 'show_owner'
+  | 'stop_managed_service'
+  | 'find_free_port'
+
+/** Full conflict report from the `evaluate_port` command. */
+export interface PortConflictReport {
+  requestedPort: number
+  requestedBy: RequestedBy
+  kind: ConflictKind
+  severity: ConflictSeverity
+  /** Human-facing root-cause sentence, evidence-based. */
+  message: string
+  owner?: PortOwner
+  listeners: ListenerSummary[]
+  resolutions: ResolutionOption[]
+}
+
+/** One free-port suggestion candidate. */
+export interface PortCandidate {
+  port: number
+  status: 'available' | 'used' | 'potential_conflict'
+  usedBy?: string
+}
+
+/* ------------------------------------------------------------------------
+ * Dependencies + readiness (Phase 7B)
+ * ---------------------------------------------------------------------- */
+
+/** What a dependency points at (tagged union from Rust). */
+export type DependencyTarget =
+  | { type: 'service'; service_id: string }
+  | { type: 'external_service'; name: string; port: number }
+  | { type: 'tcp_port'; port: number }
+  | { type: 'http_endpoint'; host: string; port: number }
+
+/** Runtime state of one dependency — listening, never health. */
+export type DependencyState =
+  | 'available'
+  | 'unavailable'
+  | 'starting'
+  | 'unhealthy'
+  | 'unknown'
+  | 'conflicted'
+
+/** One declared dependency with its live state. */
+export interface DependencyView {
+  id: string
+  workspaceId: string
+  sourceServiceId: string
+  target: DependencyTarget
+  targetLabel: string
+  required: boolean
+  state: DependencyState
+}
+
+/** Severity of one readiness issue. */
+export type IssueSeverity = 'info' | 'warning' | 'error'
+
+/** Structured root-cause issue (stable identity via code + ids). */
+export interface ReadinessIssue {
+  code: string
+  severity: IssueSeverity
+  title: string
+  message: string
+  sourceServiceId?: string
+  dependencyId?: string
+  port?: number
+}
+
+/** Readiness + conflicts + dependencies for one workspace. */
+export interface WorkspaceReadinessView {
+  workspaceId: string
+  workspaceName: string
+  status: string
+  issues: ReadinessIssue[]
+  dependencies: DependencyView[]
+  conflicts: PortConflictReport[]
+  /** Topological start order (when acyclic) for managed services. */
+  startOrder?: string[]
+}
+
+/** Target option offered when adding a dependency. */
+export type TargetOption =
+  | { type: 'service'; serviceId: string; name: string; expectedPort: number | null }
+  | { type: 'external_service_hint' }

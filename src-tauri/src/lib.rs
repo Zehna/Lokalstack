@@ -8,12 +8,15 @@
 //! keep the Phase 5 hardened control path. The pipeline lives in
 //! `src/workspace/` on top of `src/project/` (manifests),
 //! `src/discovery/` (port preflight), and `src/control/` (registry
-//! primitives + external control). Placeholder modules (`health`,
-//! `conflicts`, `ai`) await later phases.
+//! primitives + external control). Phase 7 adds `src/conflicts/` (port
+//! conflict engine + free-port finder) and `src/dependencies/`
+//! (dependency graph, readiness, root causes). Placeholder modules
+//! (`health`, `ai`) await later phases.
 
 mod ai;
 mod conflicts;
 mod control;
+mod dependencies;
 mod discovery;
 mod health;
 mod intelligence;
@@ -54,7 +57,13 @@ pub fn run() {
             workspace::restart_managed_service,
             workspace::start_workspace_services,
             workspace::stop_workspace_services,
-            workspace::get_service_logs
+            workspace::get_service_logs,
+            conflicts::evaluate_port,
+            conflicts::find_free_ports,
+            dependencies::get_workspaces_readiness,
+            dependencies::list_dependency_targets,
+            dependencies::add_workspace_dependency,
+            dependencies::remove_workspace_dependency
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

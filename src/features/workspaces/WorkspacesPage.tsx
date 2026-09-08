@@ -3,18 +3,29 @@ import {
   ChevronDown,
   ChevronRight,
   FolderOpen,
+  Network,
   Play,
   RotateCw,
+  ShieldAlert,
   Terminal,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react'
 
 import { ConfirmButton } from '@/app/components/ControlActions'
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { usePortListeners } from '@/hooks'
+import { useConflictsStore } from '@/stores/conflictsStore'
 import { usePortsStore } from '@/stores/portsStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
-import type { WorkspaceServiceView, WorkspaceStatus } from '@/types/domain'
+import type {
+  DependencyView,
+  PortCandidate,
+  PortConflictReport,
+  ReadinessIssue,
+  WorkspaceServiceView,
+  WorkspaceStatus,
+} from '@/types/domain'
 import { formatTime } from '@/utils/format'
 
 /** Tailwind classes per derived workspace status. */
@@ -58,6 +69,139 @@ function ManagedStateBadge({ managed }: { managed: WorkspaceServiceView['managed
       {state}
       {exitCode}
     </span>
+  )
+}
+
+/** Badge for one dependency's runtime state (listening — never health). */
+function DependencyBadge({ dependency }: { dependency: DependencyView }) {
+  const styles: Record<DependencyView['state'], string> = {
+    available: 'border-emerald-900/60 bg-emerald-950/40 text-emerald-400',
+    unavailable: 'border-red-900/60 bg-red-950/40 text-red-400',
+    starting: 'border-sky-900/60 bg-sky-950/40 text-sky-400',
+    unhealthy: 'border-amber-900/60 bg-amber-950/40 text-amber-400',
+    unknown: 'border-slate-700 bg-slate-950 text-slate-500',
+    conflicted: 'border-red-900/60 bg-red-950/40 text-red-400',
+  }
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+      <span className="text-xs font-medium text-slate-200">{dependency.targetLabel}</span>
+      <span className="text-xs text-slate-500">
+        {dependency.required ? 'required' : 'optional'}
+      </span>
+      <span className={`rounded border px-1.5 py-0.5 text-xs ${styles[dependency.state]}`}>
+        {dependency.state}
+      </span>
+    </div>
+  )
+}
+
+/** Root-cause issues for one workspace (structured, evidence-based). */
+function IssuesList({ issues }: { issues: ReadinessIssue[] }) {
+  if (issues.length === 0) return null
+  return (
+    <div className="space-y-1.5">
+      {issues.map((issue, index) => (
+        <div
+          key={`${issue.code}-${issue.dependencyId ?? ''}-${issue.port ?? ''}-${index}`}
+          className="flex items-start gap-2 rounded-lg border border-amber-900/40 bg-amber-950/20 px-3 py-2"
+        >
+          <TriangleAlert
+            className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
+              issue.severity === 'error' ? 'text-red-400' : 'text-amber-400'
+            }`}
+            strokeWidth={1.8}
+          />
+          <div>
+            <p className="text-xs font-medium text-slate-200">{issue.title}</p>
+            <p className="text-xs text-slate-500">{issue.message}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** The conflict dialog: honest ownership + advisory free-port suggestions. */
+function ConflictDialog({ report, suggestions }: { report: PortConflictReport; suggestions: PortCandidate[] }) {
+  const clearPortReport = useConflictsStore((state) => state.clearPortReport)
+  const available = suggestions.filter((s) => s.status === 'available')
+  const used = suggestions.filter((s) => s.status === 'used')
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Port conflict"
+      onClick={clearPortReport}
+    >
+      <div
+        className="w-full max-w-lg rounded-xl border border-slate-700 bg-slate-900 shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 border-b border-slate-800 px-4 py-3">
+          <ShieldAlert className="h-4 w-4 text-red-400" strokeWidth={1.8} />
+          <h3 className="text-sm font-semibold text-slate-100">Port conflict — :{report.requestedPort}</h3>
+        </div>
+        <div className="space-y-3 px-4 py-3 text-sm">
+          <p className="text-slate-300">{report.message}</p>
+          {report.owner !== undefined && (
+            <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-400">
+              <p>
+                <span className="text-slate-300">Owner:</span>{' '}
+                {report.owner.serviceDisplayName ?? report.owner.processName ?? `PID ${report.owner.pid}`}
+                {report.owner.processName !== undefined && ` (${report.owner.processName})`}
+              </p>
+              {report.owner.projectName !== undefined && (
+                <p>Project: {report.owner.projectName}</p>
+              )}
+              <p>Lifecycle: {report.owner.lifecycle} · PID {report.owner.pid}</p>
+            </div>
+          )}
+          {available.length > 0 && (
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                Available alternatives (advisory only)
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {available.map((s) => (
+                  <span
+                    key={s.port}
+                    className="rounded border border-emerald-900/60 bg-emerald-950/40 px-2 py-0.5 font-mono text-xs text-emerald-400"
+                  >
+                    :{s.port}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {used.length > 0 && (
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wider text-slate-500">Used</p>
+              <div className="mt-1.5 space-y-1">
+                {used.map((s) => (
+                  <p key={s.port} className="font-mono text-xs text-slate-500">
+                    :{s.port} — {s.usedBy ?? 'unknown'}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
+          <p className="text-xs text-slate-600">
+            LocalStack never edits project files or stops the owner automatically — decide what to
+            change yourself.
+          </p>
+        </div>
+        <div className="flex justify-end border-t border-slate-800 px-4 py-3">
+          <button
+            type="button"
+            onClick={clearPortReport}
+            className="rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-600"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -261,13 +405,19 @@ export function WorkspacesPage() {
   const startWorkspace = useWorkspaceStore((state) => state.startWorkspace)
   const stopWorkspace = useWorkspaceStore((state) => state.stopWorkspace)
   const projects = usePortsStore((state) => state.projects)
+  const loadConflicts = useConflictsStore((state) => state.load)
+  const readiness = useConflictsStore((state) => state.readiness)
+  const lastPortReport = useConflictsStore((state) => state.lastPortReport)
+  const portSuggestions = useConflictsStore((state) => state.portSuggestions)
+  const evaluateConflict = useConflictsStore((state) => state.evaluateConflict)
   const [creatingFor, setCreatingFor] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
 
   useEffect(() => {
     void load()
-  }, [load])
+    void loadConflicts()
+  }, [load, loadConflicts])
 
   const projectsWithoutWorkspace = projects.filter(
     (project) => !workspaces.some((w) => w.projectRoot === project.rootPath),
@@ -303,6 +453,10 @@ export function WorkspacesPage() {
         <div className="mb-4 rounded-lg border border-red-900/60 bg-red-950/30 px-4 py-3 text-sm text-red-300">
           {error}
         </div>
+      )}
+
+      {lastPortReport !== null && (
+        <ConflictDialog report={lastPortReport} suggestions={portSuggestions} />
       )}
 
       {loading ? (
@@ -359,6 +513,35 @@ export function WorkspacesPage() {
                 </button>
               </div>
               <div className="space-y-2 p-3">
+                {(() => {
+                  const view = readiness.find((r) => r.workspaceId === workspace.id)
+                  return view !== undefined && (view.issues.length > 0 || view.dependencies.length > 0) ? (
+                    <div className="space-y-2 rounded-lg border border-slate-800/60 bg-slate-950/40 p-3">
+                      {view.dependencies.length > 0 && (
+                        <div>
+                          <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                            <Network className="h-3 w-3" strokeWidth={1.8} /> Dependencies
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {view.dependencies.map((d) => (
+                              <DependencyBadge key={d.id} dependency={d} />
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <IssuesList issues={view.issues} />
+                      {view.conflicts.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => void evaluateConflict(view.conflicts[0]!.requestedPort)}
+                          className="flex items-center gap-1.5 rounded border border-red-900/60 bg-red-950/40 px-2.5 py-1 text-xs text-red-300 hover:bg-red-950/70"
+                        >
+                          <ShieldAlert className="h-3 w-3" strokeWidth={1.8} /> Show conflict details
+                        </button>
+                      )}
+                    </div>
+                  ) : null
+                })()}
                 {workspace.services.map((service) => (
                   <ServiceRow key={service.id} service={service} />
                 ))}

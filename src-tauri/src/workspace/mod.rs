@@ -33,6 +33,7 @@ pub(crate) mod rules;
 #[cfg(windows)]
 pub(crate) mod windows;
 
+use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -168,6 +169,9 @@ pub(crate) struct Inner {
     pub workspaces: Mutex<Vec<Workspace>>,
     pub specs: LaunchSpecRegistry,
     pub managed: ManagedProcessRegistry,
+    /// Declared runtime dependencies per workspace id (Phase 7B), stored
+    /// behind the same lock domain as the rest of the engine state.
+    pub dependencies: Mutex<HashMap<String, Vec<crate::dependencies::Dependency>>>,
     pub logs_tx: Sender<RoutedLog>,
     pub logs_rx: Mutex<Receiver<RoutedLog>>,
     monitor_started: std::sync::atomic::AtomicBool,
@@ -181,6 +185,7 @@ impl Default for WorkspaceEngineState {
                 workspaces: Mutex::new(Vec::new()),
                 specs: LaunchSpecRegistry::default(),
                 managed: ManagedProcessRegistry::default(),
+                dependencies: Mutex::new(HashMap::new()),
                 logs_tx: tx,
                 logs_rx: Mutex::new(rx),
                 monitor_started: std::sync::atomic::AtomicBool::new(false),
@@ -190,6 +195,11 @@ impl Default for WorkspaceEngineState {
 }
 
 impl WorkspaceEngineState {
+    /// Clone the shared engine handle (commands hand it to blocking tasks).
+    pub(crate) fn engine_inner(&self) -> Arc<Inner> {
+        Arc::clone(&self.inner)
+    }
+
     /// Spawn the readiness/exit monitor once (idempotent).
     pub(crate) fn spawn_monitor(&self) {
         if self
@@ -357,19 +367,73 @@ fn start_service(inner: &Inner, launch_spec_id: &str) -> Result<ManagedProcess, 
         });
     }
 
-    // …then the current listener table for the expected port.
+    // Dependency gate (spec §28): a required dependency that is not
+    // listening/running blocks the launch — no process is created.
+    {
+        #[cfg(windows)]
+        let listeners = crate::discovery::windows::enumerate_tcp_listeners().unwrap_or_default();
+        #[cfg(not(windows))]
+        let listeners: Vec<crate::discovery::PortListener> = Vec::new();
+        let required: Vec<crate::dependencies::Dependency> = {
+            let deps = crate::dependencies::dependencies_of(inner, &spec.workspace_id);
+            deps.into_iter()
+                .filter(|d| d.sourceServiceId == spec.service_id && d.required)
+                .collect()
+        };
+        for dependency in &required {
+            let managed_of = |service_id: &str| {
+                inner
+                    .managed
+                    .latest_for_service(&spec.workspace_id, service_id)
+                    .map(|p| p.state)
+            };
+            let state = crate::dependencies::evaluate_dependency(dependency, &listeners, managed_of, |_| None);
+            if !matches!(
+                state,
+                crate::dependencies::DependencyState::Available
+                    | crate::dependencies::DependencyState::Starting
+            ) {
+                return Err(ManagedActionOutcome {
+                    ok: false,
+                    code: "DEPENDENCY_BLOCKED".to_string(),
+                    message: format!(
+                        "Cannot start: required dependency {} is not available (state: {:?}).",
+                        dependency.target.label(),
+                        state
+                    ),
+                    managedId: None,
+                });
+            }
+        }
+    }
+
+    // …then the current listener table for the expected port, with an
+    // evidence-based owner description (Phase 7A).
     if let Some(port) = spec.expected_port {
-        if let Some(owner_pid) = find_port_owner(port) {
+        if let Some(block) = crate::conflicts::check_launch_port(port, &inner.managed.managed_pids()) {
             // Our own just-stopped process must not be mistaken for an
             // external instance; anything else is a genuine conflict.
-            let owned = inner.managed.managed_pids().contains(&owner_pid)
-                || inner.managed.workspace_processes(&spec.workspace_id).iter().any(|p| p.rootPid == owner_pid && p.state.alive());
-            if !owned {
+            let owned_by_us = block
+                .owner_pid
+                .and_then(|pid| inner.managed.managed_by_pid(pid))
+                .is_some_and(|p| p.workspaceId == spec.workspace_id);
+            if !owned_by_us && !block.same_managed_service {
+                let owner = block
+                    .owner_pid
+                    .and_then(|pid| inner.managed.managed_by_pid(pid))
+                    .map(|p| format!("managed service {}", p.serviceId))
+                    .or_else(|| {
+                        block
+                            .owner_name
+                            .as_ref()
+                            .map(|name| format!("{name} (PID {})", block.owner_pid.unwrap_or(0)))
+                    })
+                    .unwrap_or_else(|| "an unresolvable process".to_string());
                 return Err(ManagedActionOutcome {
                     ok: false,
                     code: "PORT_CONFLICT".to_string(),
                     message: format!(
-                        "Port {port} is already in use by PID {owner_pid}. An external instance appears to already be running — decide on it separately."
+                        "Port {port} is owned by {owner}. An external instance appears to already be running — decide on it separately."
                     ),
                     managedId: None,
                 });
@@ -647,7 +711,7 @@ fn find_port_owner(port: u16) -> Option<u32> {
     }
 }
 
-fn launch_with_logs(
+pub(crate) fn launch_with_logs(
     spec: &LaunchSpec,
     tx: Option<Sender<crate::workspace::rules::LogLine>>,
 ) -> Result<crate::workspace::windows::LaunchedProcess, String> {
@@ -664,7 +728,7 @@ fn launch_with_logs(
 
 /// Creation time of a freshly launched PID (best effort — the registry
 /// stores it as the process identity).
-fn managed_creation_time(pid: u32) -> Option<u64> {
+pub(crate) fn managed_creation_time(pid: u32) -> Option<u64> {
     #[cfg(windows)]
     {
         let probe = crate::control::windows::revalidate(pid);
@@ -1037,15 +1101,28 @@ pub(crate) async fn restart_managed_service(
     .map_err(|e| format!("workspace task join error: {e}"))?
 }
 
-/// START WORKSPACE: start every manageable service that is not already
-/// running, in deterministic role order. External dependencies are never
-/// started. First failure stops the batch and is reported.
+/// START WORKSPACE — full preflight first (spec §27), then a conservative
+/// start:
+///
+/// 1. dependency graph (cycle → refuse);
+/// 2. external dependency availability;
+/// 3. port-conflict preflight per service;
+/// 4. topological start order (dependencies before dependents;
+///    role order as the acyclic fallback);
+/// 5. start eligible managed services only — external dependencies are
+///    never started.
+///
+/// **Conservative decision (documented):** if any blocking issue exists,
+/// *nothing* is started — Phase 7 has no partial auto-start policy. The
+/// blocking root causes are returned in one `BLOCKED` outcome.
 #[tauri::command]
 pub(crate) async fn start_workspace_services(
     state: tauri::State<'_, WorkspaceEngineState>,
+    projects: tauri::State<'_, crate::project::ProjectEngineState>,
     workspace_id: String,
 ) -> Result<Vec<ManagedActionOutcome>, String> {
     let inner = Arc::clone(&state.inner);
+    let project_cache = Arc::clone(&projects.cache);
     tauri::async_runtime::spawn_blocking(move || {
         let workspace = {
             let list = inner
@@ -1058,12 +1135,56 @@ pub(crate) async fn start_workspace_services(
             return Err("Workspace not found.".to_string());
         };
         let _ = &workspace_id;
-        let ordered = crate::workspace::rules::launch_order(
-            workspace
-                .services
+
+        // ---- Preflight: conflicts + dependencies (one snapshot) --------
+        let projects_handle = crate::project::ProjectEngineState { cache: project_cache };
+        let readiness_views =
+            crate::dependencies::evaluate_all(&inner, &projects_handle)?;
+        if let Some(view) = readiness_views.iter().find(|v| v.workspaceId == workspace.id) {
+            let blockers: Vec<&crate::dependencies::ReadinessIssue> = view
+                .issues
                 .iter()
-                .map(|s| (s.launchSpecId.clone(), s.role)),
-        );
+                .filter(|issue| issue.severity == crate::dependencies::readiness::IssueSeverity::Error)
+                .collect();
+            if !blockers.is_empty() {
+                let detail = blockers
+                    .iter()
+                    .map(|issue| issue.message.clone())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                return Ok(vec![ManagedActionOutcome {
+                    ok: false,
+                    code: "BLOCKED".to_string(),
+                    message: format!("Workspace is blocked — nothing was started. {detail}"),
+                    managedId: None,
+                }]);
+            }
+        }
+
+        // ---- Start order: topological, role order as fallback ----------
+        let spec_by_service: HashMap<String, String> = workspace
+            .services
+            .iter()
+            .map(|s| (s.id.clone(), s.launchSpecId.clone()))
+            .collect();
+        let ordered: Vec<String> = match crate::dependencies::start_order(&inner, &workspace.id) {
+            Ok(service_order) => service_order
+                .into_iter()
+                .filter_map(|id| spec_by_service.get(&id).cloned())
+                .collect(),
+            Err(cycle) => {
+                return Ok(vec![ManagedActionOutcome {
+                    ok: false,
+                    code: "DEPENDENCY_CYCLE".to_string(),
+                    message: format!(
+                        "Dependency cycle ({}) — ordered start is refused.",
+                        cycle.path.join(" → ")
+                    ),
+                    managedId: None,
+                }]);
+            }
+        };
+
         let mut outcomes = Vec::new();
         for launch_spec_id in ordered {
             match start_service(&inner, &launch_spec_id) {
@@ -1272,7 +1393,6 @@ s.listen(0, '127.0.0.1', () => log('workspace-live-server port ' + s.address().p
         // 3. Readiness: the port parsed from the child's own stdout must
         // appear in the listener table, owned by the managed PID.
         let port = port.expect("child must log its assigned port");
-        let deadline = Instant::now() + Duration::from_secs(15);
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut port_up = false;
         while Instant::now() < deadline {

@@ -301,6 +301,16 @@ impl ManagedProcessRegistry {
         self.lock().values().map(|e| e.process.rootPid).collect()
     }
 
+    /// The managed process currently owning `pid`, if any (conflict
+    /// ownership resolution: managed vs external lifecycle).
+    pub(crate) fn managed_by_pid(&self, pid: u32) -> Option<ManagedProcess> {
+        self.lock()
+            .values()
+            .filter(|e| e.process.rootPid == pid && e.process.state.alive())
+            .map(|e| e.process.clone())
+            .max_by_key(|p| p.startedAt)
+    }
+
     /// Whether a workspace service already has a live managed process.
     pub(crate) fn has_running_service(&self, workspace_id: &str, service_id: &str) -> bool {
         self.lock().values().any(|e| {

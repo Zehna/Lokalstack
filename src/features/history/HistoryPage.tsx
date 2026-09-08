@@ -13,7 +13,7 @@ function actionIcon(action: string) {
   if (action === 'stop' || action === 'service_stop' || action === 'workspace_stop') {
     return <Square className="h-3.5 w-3.5 text-amber-400" strokeWidth={1.8} />
   }
-  if (action === 'port_conflict') {
+  if (action === 'port_conflict' || action === 'conflict_detected' || action === 'dependency_unavailable' || action === 'workspace_blocked') {
     return <TriangleAlert className="h-3.5 w-3.5 text-amber-400" strokeWidth={1.8} />
   }
   return <RefreshCw className="h-3.5 w-3.5 text-sky-400" strokeWidth={1.8} />
@@ -39,6 +39,14 @@ const ACTION_LABELS: Record<string, string> = {
   workspace_create: 'Create ws',
   startup_failure: 'Start fail',
   port_conflict: 'Conflict',
+  // Phase 7 conflict/dependency intelligence (transition events).
+  conflict_detected: 'Conflict',
+  conflict_resolved: 'Conflict ok',
+  dependency_unavailable: 'Dep down',
+  dependency_recovered: 'Dep up',
+  workspace_blocked: 'Blocked',
+  workspace_recovered: 'Unblocked',
+  free_port_suggested: 'Free ports',
 }
 
 /**

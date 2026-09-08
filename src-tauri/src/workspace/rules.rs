@@ -425,23 +425,13 @@ pub(crate) enum WorkspaceStatus {
     }
 }
 
-/// Order services for `Start Workspace`: deterministic role order
-/// (database → backend → worker → frontend → ai → other), stable within a
-/// role by service id. External dependencies are never in the launch list.
-pub(crate) fn launch_order<'a, I>(services: I) -> Vec<String>
-where
-    I: IntoIterator<Item = (String, Role)>,
-{
-    let mut entries: Vec<(u8, String)> = services
-        .into_iter()
-        .map(|(id, role)| (role.order_rank(), id))
-        .collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    entries.into_iter().map(|(_, id)| id).collect()
-}
-
+/// Log ring buffer
 // ---------------------------------------------------------------------------
 // Log ring buffer
+// (Launch ordering moved to `crate::dependencies::graph::topological_order`
+// in Phase 7: the dependency graph is authoritative, with
+// `Role::order_rank` as the deterministic tiebreak for independent
+// services.)
 // ---------------------------------------------------------------------------
 
 /// One captured output line.
@@ -741,20 +731,6 @@ mod tests {
         let states = [ManagedState::Degraded, ManagedState::Stopped];
         assert_eq!(workspace_status(&states), WorkspaceStatus::Partial);
         assert!(ManagedState::Degraded.alive());
-    }
-
-    // --- ordering --------------------------------------------------------------------
-
-    #[test]
-    fn launch_order_follows_role_rank_then_id() {
-        let ordered = launch_order([
-            ("frontend".to_string(), Role::Frontend),
-            ("worker".to_string(), Role::Worker),
-            ("backend".to_string(), Role::Backend),
-            ("db".to_string(), Role::Database),
-            ("other".to_string(), Role::Other),
-        ]);
-        assert_eq!(ordered, vec!["db", "backend", "worker", "frontend", "other"]);
     }
 
     // --- log ring ---------------------------------------------------------------------
