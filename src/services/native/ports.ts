@@ -10,6 +10,7 @@
 import { invoke } from '@tauri-apps/api/core'
 
 import type {
+  AiRuntimeSnapshot,
   DependencyTarget,
   LaunchCandidate,
   LogBatch,
@@ -179,4 +180,17 @@ export async function addWorkspaceDependency(
 /** Remove a dependency edge. */
 export async function removeWorkspaceDependency(workspaceId: string, dependencyId: string): Promise<void> {
   await invoke('remove_workspace_dependency', { workspaceId, dependencyId })
+}
+
+/* ------------------------------------------------------------------------
+ * Phase 8 — AI runtime intelligence (backend-controlled probing only)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * All discovered AI runtimes with their (cached or fresh) snapshots. The
+ * frontend passes no URLs — the backend resolves trusted runtimes from its
+ * own discovery snapshot and probes only approved read-only endpoints.
+ */
+export async function getAiRuntimes(bypassCache = false): Promise<AiRuntimeSnapshot[]> {
+  return invoke<AiRuntimeSnapshot[]>('get_ai_runtimes', { bypassCache })
 }

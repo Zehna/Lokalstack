@@ -561,3 +561,89 @@ export interface WorkspaceReadinessView {
 export type TargetOption =
   | { type: 'service'; serviceId: string; name: string; expectedPort: number | null }
   | { type: 'external_service_hint' }
+
+/* ------------------------------------------------------------------------
+ * AI runtime intelligence (Phase 8) — read-only observability
+ * ---------------------------------------------------------------------- */
+
+/** Runtime health — adapter-evidence-based, distinct from process lifecycle. */
+export type AiHealth =
+  | 'ready'
+  | 'loading'
+  | 'busy'
+  | 'degraded'
+  | 'unavailable'
+  | 'unknown'
+
+/** Structured probe error (mirrors Rust `AiProbeError`). */
+export type AiProbeError =
+  | { kind: 'connect_failed'; detail: string }
+  | { kind: 'timeout' }
+  | { kind: 'http_status'; status: number }
+  | { kind: 'malformed_json'; detail: string }
+  | { kind: 'too_large'; limit: number }
+  | { kind: 'policy_rejected'; reason: string }
+
+/** One model as observed from a runtime — optional fields stay absent. */
+export interface AiModelInfo {
+  id: string
+  displayName?: string
+  family?: string
+  parameterSize?: string
+  quantization?: string
+  sizeBytes?: number
+  modifiedAt?: number
+  loaded?: boolean
+  vramBytes?: number
+  status?: string
+  expiresAt?: number
+}
+
+/** Device/resource observations — only what the runtime reported. */
+export interface AiResourceInfo {
+  device?: string
+  vramTotalBytes?: number
+  vramFreeBytes?: number
+  modelVramBytes?: number
+  queueRunning?: number
+  queuePending?: number
+}
+
+/** Explicit capability flags — the UI never renders unsupported features. */
+export interface AiRuntimeCapabilities {
+  models: boolean
+  loadedModels: boolean
+  version: boolean
+  health: boolean
+  metrics: boolean
+  gpuStats: boolean
+  queue: boolean
+}
+
+/** llama.cpp-style runtime properties (conservative subset). */
+export interface AiLlamaCppProps {
+  modelPath?: string
+  contextSize?: number
+  slotsTotal?: number
+  slotsIdle?: number
+}
+
+/** Normalized, provider-agnostic runtime snapshot. */
+export interface AiRuntimeSnapshot {
+  runtimeId: string
+  pid: number
+  serviceKind: string
+  displayName: string
+  endpoint: string
+  health: AiHealth
+  version?: string
+  capabilities: AiRuntimeCapabilities
+  props?: AiLlamaCppProps
+  models: AiModelInfo[]
+  loadedModels: AiModelInfo[]
+  resources?: AiResourceInfo
+  capturedAt: number
+  latencyMs: number
+  errorLabel?: string
+  error?: AiProbeError
+}

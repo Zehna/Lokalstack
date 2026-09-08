@@ -1,9 +1,10 @@
 import { useEffect } from 'react'
-import { Activity, Boxes, TriangleAlert } from 'lucide-react'
+import { Activity, Boxes, BrainCircuit, TriangleAlert } from 'lucide-react'
 
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { SummaryCard } from './components/SummaryCard'
 import { usePortListeners } from '@/hooks'
+import { useAiRuntimeStore } from '@/stores/aiRuntimeStore'
 import { useAppStore } from '@/stores/appStore'
 import { useConflictsStore } from '@/stores/conflictsStore'
 import { usePortsStore } from '@/stores/portsStore'
@@ -126,6 +127,11 @@ export function DashboardPage() {
   useEffect(() => {
     void loadConflicts()
   }, [loadConflicts])
+  const loadAi = useAiRuntimeStore((state) => state.load)
+  const aiRuntimes = useAiRuntimeStore((state) => state.runtimes)
+  useEffect(() => {
+    void loadAi()
+  }, [loadAi])
 
   const listenerCount = listeners.length
   const projects = usePortsStore((state) => state.projects)
@@ -187,6 +193,15 @@ export function DashboardPage() {
             0,
           )} dependencies unavailable`}
           footer="Required dependencies or ports blocking readiness"
+        />
+        <SummaryCard
+          title="AI Runtimes"
+          icon={<BrainCircuit className="h-4 w-4 text-violet-400" strokeWidth={1.8} />}
+          value={String(aiRuntimes.length)}
+          detail={`${aiRuntimes.filter((r) => r.health === 'ready').length} ready · ${
+            aiRuntimes.filter((r) => r.health === 'loading').length
+          } loading`}
+          footer={`${aiRuntimes.reduce((count, r) => count + r.loadedModels.length, 0)} models loaded`}
         />
         <SummaryCard
           title="System Usage"

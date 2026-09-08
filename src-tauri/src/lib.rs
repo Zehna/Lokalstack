@@ -37,6 +37,7 @@ pub fn run() {
         .manage(project::ProjectEngineState::default())
         .manage(control::ControlEngineState::default())
         .manage(workspace::WorkspaceEngineState::default())
+        .manage(ai::registry::AiEngineState::default())
         .setup(|app| {
             // Readiness/exit monitor for managed processes (idempotent).
             use tauri::Manager;
@@ -63,7 +64,8 @@ pub fn run() {
             dependencies::get_workspaces_readiness,
             dependencies::list_dependency_targets,
             dependencies::add_workspace_dependency,
-            dependencies::remove_workspace_dependency
+            dependencies::remove_workspace_dependency,
+            ai::registry::get_ai_runtimes
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

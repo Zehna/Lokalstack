@@ -3,9 +3,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { ControlActions } from '@/app/components/ControlActions'
 import { usePortListeners } from '@/hooks'
+import { useAiRuntimeStore } from '@/stores/aiRuntimeStore'
 import { usePortsStore } from '@/stores/portsStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
-import type { ServiceCategory } from '@/types/domain'
+import type { AiHealth, ServiceCategory } from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 import { groupListenersByProcess } from './groupProcesses'
 import {
@@ -27,6 +28,16 @@ const CATEGORY_FILTERS: ReadonlyArray<{ value: ServiceCategory | 'all'; label: s
   { value: 'unknown', label: 'Unknown' },
 ]
 
+/** Same health styling as the AI Services page (shared semantic). */
+const HEALTH_STYLES: Record<AiHealth, string> = {
+  ready: 'border-emerald-900/60 bg-emerald-950/40 text-emerald-400',
+  loading: 'border-sky-900/60 bg-sky-950/40 text-sky-400',
+  busy: 'border-amber-900/60 bg-amber-950/40 text-amber-400',
+  degraded: 'border-amber-900/60 bg-amber-950/40 text-amber-400',
+  unavailable: 'border-red-900/60 bg-red-950/40 text-red-400',
+  unknown: 'border-slate-700 bg-slate-950 text-slate-500',
+}
+
 /**
  * Services view — ACTIVE LOCAL PROCESSES with real service identities.
  *
@@ -38,9 +49,12 @@ const CATEGORY_FILTERS: ReadonlyArray<{ value: ServiceCategory | 'all'; label: s
 export function ServicesPage() {
   const workspaces = useWorkspaceStore((state) => state.workspaces)
   const loadWorkspaces = useWorkspaceStore((state) => state.load)
+  const aiRuntimes = useAiRuntimeStore((state) => state.runtimes)
+  const loadAiRuntimes = useAiRuntimeStore((state) => state.load)
   useEffect(() => {
     void loadWorkspaces()
-  }, [loadWorkspaces])
+    void loadAiRuntimes()
+  }, [loadWorkspaces, loadAiRuntimes])
   // Managed root PIDs — any discovered PID in this set is LocalStack-managed.
   const managedPids = new Set(
     workspaces.flatMap((w) =>
@@ -198,6 +212,21 @@ export function ServicesPage() {
                           {group.identity.category}
                         </span>
                       )}
+                      {/* Phase 8: runtime health for AI services — distinct
+                          from the process lifecycle label shown elsewhere. */}
+                      {group.identity.category === 'ai' &&
+                        aiRuntimes.find((r) => r.pid === group.pid) !== undefined && (
+                          <span
+                            className={`rounded border px-1.5 py-0.5 text-xs uppercase ${
+                              HEALTH_STYLES[
+                                aiRuntimes.find((r) => r.pid === group.pid)!.health
+                              ]
+                            }`}
+                            title="AI runtime health (adapter evidence — not the process lifecycle)"
+                          >
+                            {aiRuntimes.find((r) => r.pid === group.pid)!.health}
+                          </span>
+                        )}
                     </>
                   )}
 

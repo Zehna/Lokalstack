@@ -31,6 +31,12 @@ export interface ControlHistoryEntry {
     | 'workspace_blocked'
     | 'workspace_recovered'
     | 'free_port_suggested'
+    // Phase 8 AI runtime transitions (deduped).
+    | 'ai_runtime_ready'
+    | 'ai_runtime_unavailable'
+    | 'ai_runtime_loading'
+    | 'ai_model_loaded'
+    | 'ai_model_unloaded'
   /** What the action targeted (human-facing display name). */
   subject: string
   /** PID when the action had one (advisory, from the snapshot). */

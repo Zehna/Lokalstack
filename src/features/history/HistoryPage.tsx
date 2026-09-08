@@ -13,7 +13,7 @@ function actionIcon(action: string) {
   if (action === 'stop' || action === 'service_stop' || action === 'workspace_stop') {
     return <Square className="h-3.5 w-3.5 text-amber-400" strokeWidth={1.8} />
   }
-  if (action === 'port_conflict' || action === 'conflict_detected' || action === 'dependency_unavailable' || action === 'workspace_blocked') {
+  if (action === 'port_conflict' || action === 'conflict_detected' || action === 'dependency_unavailable' || action === 'workspace_blocked' || action === 'ai_runtime_unavailable') {
     return <TriangleAlert className="h-3.5 w-3.5 text-amber-400" strokeWidth={1.8} />
   }
   return <RefreshCw className="h-3.5 w-3.5 text-sky-400" strokeWidth={1.8} />
@@ -47,6 +47,12 @@ const ACTION_LABELS: Record<string, string> = {
   workspace_blocked: 'Blocked',
   workspace_recovered: 'Unblocked',
   free_port_suggested: 'Free ports',
+  // Phase 8 AI runtime transitions (deduped, never per-poll).
+  ai_runtime_ready: 'AI ready',
+  ai_runtime_unavailable: 'AI down',
+  ai_runtime_loading: 'AI loading',
+  ai_model_loaded: 'Model in',
+  ai_model_unloaded: 'Model out',
 }
 
 /**

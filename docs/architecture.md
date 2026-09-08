@@ -565,8 +565,74 @@ React (WorkspacesPage / conflictsStore) ── invoke('get_workspaces_readiness'
   groups, identity revalidation at every step. External services can never
   be restarted or orchestrated, and workspace actions never touch external
   databases/infrastructure.
+- AI runtime probing (Phase 8) exists **only** for runtimes the Phase 3
+  classifier already identified, only over loopback, only read-only GETs of
+  approved inspection paths. There is no command equivalent to
+  `http_get(url)` — the frontend passes opaque `runtimeId`s; endpoint
+  selection is entirely backend-controlled.
 
-## Known limitations (Phase 2–7)
+### AI runtime intelligence (Phase 8)
+
+```
+ServiceIdentity (Phase 3, reused — never duplicated)
+      ↓  resolve_runtimes: AI-classified PIDs only
+TrustedRuntime { pid, creation_ms, kind, endpoint }
+      ↓  adapter per kind (Ollama / llama.cpp / ComfyUI / generic)
+read-only GET over loopback (redirects disabled, 1 s connect / 2 s total)
+      ↓
+AiRuntimeSnapshot { health, version, capabilities, models, loadedModels,
+                    resources, props, latency, structured error }
+```
+
+**Trust & endpoint policy.** A runtime exists only when the Phase 3
+classifier marked a PID as an AI service **and** the listener table yields a
+loopback bind. `listener_base_url` maps `0.0.0.0`/`::` to `localhost` (the
+client connects over loopback, never to the wildcard) and only
+`127.0.0.1`/`localhost`/`[::1]` pass `validate_endpoint` — private LAN,
+public IPs, other schemes, and credentials in URLs are rejected before any
+request. The HTTP client follows **no redirects** (a 302 to a non-loopback
+host would otherwise be chased before any policy check).
+
+**HTTP bounds (spec §8–9).** Connect timeout 1 s, request timeout 2 s,
+body cap 2 MB enforced while streaming (Content-Length is not trusted),
+≤ 500 models and ≤ 64 loaded models per snapshot, ≤ 4 concurrent probes.
+AI inspection runs in its own Tauri blocking task on its own cadence — a
+hung runtime costs its own 2 s, never the 20–40 ms discovery cycle.
+
+**Cache cadence (spec §26).** Health + loaded models: 8 s. Model inventory:
+45 s. Version: process lifetime. The runtime id is BLAKE3 over
+(pid ‖ creation time ‖ kind ‖ endpoint ‖ per-boot key): a process restart
+changes the id and orphans the old snapshot — no stale metadata. Manual
+refresh bypasses all TTLs.
+
+**Health semantics (spec §5, §14, §16).** `ready` requires adapter payload
+evidence (a parsed `/api/tags`, `/api/ps`, `/api/version`, a llama.cpp
+`{"status":"ok"}` or `loading model` body, ComfyUI `/system_stats`) — a TCP
+listener alone is never READY. `loading`/`busy` come from payload text;
+`degraded` means the runtime answered unexpectedly; `unavailable` means
+connect/timeout; missing optional endpoints (version, metrics, props) are
+**not** failures. Errors stay structured (`connect_failed`, `timeout`,
+`http_status`, `malformed_json`, `too_large`, `policy_rejected`) with a
+concise honest label for the UI.
+
+**Adapters.** Ollama: `/api/version`, `/api/tags`, `/api/ps` (installed
+models with family/params/quant/size; loaded models with reported VRAM and
+best-effort `expiresAt` — never estimated). llama.cpp: `/health` (payload
+examined, not assumed), `/props` (normalized context/slots subset),
+`/v1/models` then `/models` (plain GETs only — metadata queries cannot
+trigger model autoload), `/metrics` optional (404/501 ⇒ `metrics: false`, no
+error banner). ComfyUI: `/system_stats` + `/queue` counts only — no workflow
+contents, no submit/cancel/clear. Gradio/Open WebUI/unknown: HTTP
+reachability only; no page scraping, no auth, no account/token data.
+
+**Privacy (spec §42) & no-action guarantees.** Only model names and runtime
+metadata are collected; prompts, conversations, cookies, tokens, and
+accounts are never touched — and no inference request is ever sent, so no
+such data can be generated. No pull/delete/load/unload/copy model, no
+workflow submission, no configuration mutation. Nothing is transmitted off
+the machine.
+
+## Known limitations (Phase 2–8)
 
 - Windows-only. Other platforms get an explicit error, not silent emptiness.
 - TCP only — UDP discovery would be a separate, explicit design.
@@ -634,6 +700,14 @@ React (WorkspacesPage / conflictsStore) ── invoke('get_workspaces_readiness'
   later phase and are never faked.
 - History is per-session and transition-deduped; repeated identical issues
   do not spam the log, but there is no persistence yet.
+- AI probes are GET-only against a fixed set of approved paths per adapter;
+  runtimes behind authentication, runtimes exposing metadata only on
+  non-standard paths, and HTTPS-on-loopback runtimes degrade to reachability
+  or `unavailable` rather than being guessed at.
+- `expiresAt` for Ollama models is parsed best-effort (UTC RFC3339 only);
+  other formats stay unknown instead of being guessed.
+- GPU telemetry beyond what a runtime itself reports (driver-level stats) is
+  out of scope by design in Phase 8.
 
 ## See also
 

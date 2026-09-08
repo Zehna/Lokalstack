@@ -22,6 +22,17 @@ serde_json = "1"
 # Control-target registry (Phase 5 hardened): audited BLAKE3 for opaque,
 # unpredictable target ids.
 blake3 = "1"
+# AI runtime inspection (Phase 8): local HTTP probing of already-discovered
+# AI services. Small dependency surface: blocking client, rustls, no
+# automatic redirects (a redirect to a non-loopback host must be rejected,
+# never followed — spec §6).
+reqwest = { version = "0.12", default-features = false, features = [
+  "blocking",
+  "json",
+  "rustls-tls",
+] }
+# URL parsing for the AI endpoint trust policy (same version reqwest uses).
+url = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = [

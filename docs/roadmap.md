@@ -462,13 +462,31 @@ inherited (no .env integration yet).
   dependency badges, readiness issues on the workspace page, dashboard
   conflict/blocked cards, transition-deduped history events.
 
-## Phase 8 — AI Service Detection
+## Phase 8 — AI Runtime Intelligence & Local Model Observability ✅
 
-**Goal:** recognize local AI runtimes.
+**Goal:** enrich already-detected AI services with read-only runtime facts.
+**Status: complete and verified.**
 
-- Ollama, llama.cpp, ComfyUI, Gradio, Open WebUI and similar localhost AI
-  services, with model/runtime metadata where available.
-- Detection only — no model downloads or management in scope.
+- **Adapter architecture** (`src-tauri/src/ai/`): `domain.rs` (model,
+  loopback-only endpoint policy, HTTP bounds), `adapters.rs` (Ollama /
+  llama.cpp / ComfyUI / generic — pure parsing, fixture-tested),
+  `probe.rs` (1 s connect / 2 s total, 2 MB stream-enforced cap, redirects
+  disabled, structured errors), `registry.rs` (trusted runtime resolution,
+  BLAKE3 identity-bound cache, 8 s / 45 s cadence, ≤ 4 probes).
+- **Reused Phase 3 detection** — the AI engine resolves runtimes only from
+  the existing classifier; no URL probing to *discover* providers.
+- **Health from evidence**: `ready` requires a parsed runtime payload;
+  `loading`/`busy`/`degraded`/`unavailable` map from real responses.
+  Listening ≠ ready; process lifecycle ≠ runtime health.
+- **Observability only**: no inference, no pull/delete/load/unload, no
+  workflow submission, no auth/conversation/token data — enforced in
+  adapter design and documented.
+- **UI**: real AI Services page (health, version, capability-aware model
+  table with params/quant/disk/VRAM, loaded-in-memory summary, expandable
+  details), dashboard AI summary card, Services-page runtime-health badge,
+  transition-deduped history events (`ai_runtime_ready`,
+  `ai_runtime_unavailable`, `ai_runtime_loading`, `ai_model_loaded`,
+  `ai_model_unloaded`).
 
 ## Phase 9 — Docker
 
