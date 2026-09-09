@@ -13,3 +13,6 @@ src-tauri/gen/
 Thumbs.db
 *.local
 *.log
+
+# Coverage output
+coverage/

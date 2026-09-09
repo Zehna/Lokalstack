@@ -1,7 +1,8 @@
 import { create } from 'zustand'
 
 import { getAiRuntimes } from '@/services/native/ports'
-import { useControlStore } from '@/stores/controlStore'
+import { recordAuditEntry } from '@/stores/auditTrail'
+import { createPollingOwner } from '@/stores/pollingOwner'
 import type { AiRuntimeSnapshot } from '@/types/domain'
 
 /** How often the AI runtime view refreshes while the page is active. */
@@ -22,8 +23,50 @@ interface AiRuntimeState {
   refreshRuntime: (runtimeId: string) => Promise<void>
 }
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
-let nextEntryId = 1
+/* -------------------------------------------------------------------------
+ * Polling lifecycle — named-subscription, single shared timer (Phase 10A
+ * ownership audit). Each consumer acquires by stable id and receives a
+ * structurally-paired, idempotent release closure. Duplicate acquisition
+ * from one consumer = ONE subscription; release cannot underflow.
+ * ---------------------------------------------------------------------- */
+
+const aiRuntimePollOwner = createPollingOwner(
+  AI_POLL_MS,
+  () => {
+    void useAiRuntimeStore.getState().refresh()
+  },
+  () => {
+    void useAiRuntimeStore.getState().refresh()
+  },
+)
+
+/**
+ * Acquire the 10 s AI probe cycle for one logical consumer. Idempotent per
+ * consumer. Returns the release closure for the consumer's cleanup.
+ */
+export function subscribeAiRuntimePolling(consumerId: string): () => void {
+  return aiRuntimePollOwner.acquire(consumerId)
+}
+
+/** Convenience acquire with an anonymous consumer id. */
+export function startAiRuntimePolling(): () => void {
+  return subscribeAiRuntimePolling('anonymous')
+}
+
+/** Test observability: distinct consumers / timer state. */
+export function aiRuntimePollingSubscribers(): number {
+  return aiRuntimePollOwner.consumerCount()
+}
+
+/** Test observability: whether the shared interval exists. */
+export function aiRuntimePollingRunning(): boolean {
+  return aiRuntimePollOwner.isRunning()
+}
+
+/** Test-only teardown: release every consumer and stop the timer. */
+export function resetAiRuntimePolling(): void {
+  aiRuntimePollOwner.releaseAll()
+}
 
 /** Record a transition event in the shared session audit trail. */
 function record(
@@ -32,12 +75,7 @@ function record(
   outcome: 'success' | 'failure' | 'stale',
   message: string,
 ): void {
-  const control = useControlStore.getState()
-  const next = [
-    ...control.history,
-    { id: nextEntryId++, at: Date.now(), action, subject, pid: null, outcome, message },
-  ].slice(-100)
-  useControlStore.setState({ history: next })
+  recordAuditEntry(action, subject, outcome, message)
 }
 
 /**
@@ -123,11 +161,6 @@ export const useAiRuntimeStore = create<AiRuntimeState>()((set, get) => {
     errorsByRuntime: {},
 
     load: async () => {
-      if (pollTimer === null) {
-        pollTimer = setInterval(() => {
-          void runRefresh(false)
-        }, AI_POLL_MS)
-      }
       await runRefresh(false)
     },
 

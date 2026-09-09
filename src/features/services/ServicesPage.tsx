@@ -3,10 +3,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { ControlActions } from '@/app/components/ControlActions'
 import { usePortListeners } from '@/hooks'
-import { useAiRuntimeStore } from '@/stores/aiRuntimeStore'
+import { subscribeAiRuntimePolling, useAiRuntimeStore } from '@/stores/aiRuntimeStore'
 import { useDockerStore } from '@/stores/dockerStore'
 import { usePortsStore } from '@/stores/portsStore'
-import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { subscribeWorkspacePolling, useWorkspaceStore } from '@/stores/workspaceStore'
 import type { AiHealth, ContainerPortOwnership, ServiceCategory } from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 import { groupListenersByProcess } from './groupProcesses'
@@ -58,6 +58,12 @@ export function ServicesPage() {
     void loadWorkspaces()
     void loadAiRuntimes()
     void loadDocker()
+    const releaseWorkspace = subscribeWorkspacePolling('services')
+    const releaseAi = subscribeAiRuntimePolling('services')
+    return () => {
+      releaseWorkspace()
+      releaseAi()
+    }
   }, [loadWorkspaces, loadAiRuntimes, loadDocker])
   // Managed root PIDs — any discovered PID in this set is LocalStack-managed.
   const managedPids = new Set(

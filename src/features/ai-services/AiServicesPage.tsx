@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { BrainCircuit, ChevronDown, ChevronRight, Cpu, ExternalLink, RefreshCw } from 'lucide-react'
 
 import { RefreshButton } from '@/app/components/RefreshButton'
-import { useAiRuntimeStore } from '@/stores/aiRuntimeStore'
+import { subscribeAiRuntimePolling, useAiRuntimeStore } from '@/stores/aiRuntimeStore'
 import { usePortListeners } from '@/hooks'
 import type { AiHealth, AiRuntimeSnapshot } from '@/types/domain'
 import { formatBytes, formatTime } from '@/utils/format'
@@ -251,6 +251,7 @@ export function AiServicesPage() {
 
   useEffect(() => {
     void load()
+    return subscribeAiRuntimePolling('ai-services')
   }, [load])
 
   return (

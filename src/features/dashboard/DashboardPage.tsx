@@ -4,12 +4,12 @@ import { Activity, Boxes, BrainCircuit, Container, TriangleAlert } from 'lucide-
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { SummaryCard } from './components/SummaryCard'
 import { usePortListeners } from '@/hooks'
-import { useAiRuntimeStore } from '@/stores/aiRuntimeStore'
+import { subscribeAiRuntimePolling, useAiRuntimeStore } from '@/stores/aiRuntimeStore'
 import { useAppStore } from '@/stores/appStore'
-import { useConflictsStore } from '@/stores/conflictsStore'
+import { subscribeConflictsPolling, useConflictsStore } from '@/stores/conflictsStore'
 import { useDockerStore } from '@/stores/dockerStore'
 import { usePortsStore } from '@/stores/portsStore'
-import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { subscribeWorkspacePolling, useWorkspaceStore } from '@/stores/workspaceStore'
 import type { PortListener, ProcessInfo, ProjectIdentity, ServiceIdentity } from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 
@@ -112,6 +112,7 @@ export function DashboardPage() {
   const loadWorkspaces = useWorkspaceStore((state) => state.load)
   useEffect(() => {
     void loadWorkspaces()
+    return subscribeWorkspacePolling('dashboard')
   }, [loadWorkspaces])
   const listeners = usePortsStore((state) => state.listeners)
   const processByPid = usePortsStore((state) => state.processByPid)
@@ -127,11 +128,13 @@ export function DashboardPage() {
   const readiness = useConflictsStore((state) => state.readiness)
   useEffect(() => {
     void loadConflicts()
+    return subscribeConflictsPolling('dashboard')
   }, [loadConflicts])
   const loadAi = useAiRuntimeStore((state) => state.load)
   const aiRuntimes = useAiRuntimeStore((state) => state.runtimes)
   useEffect(() => {
     void loadAi()
+    return subscribeAiRuntimePolling('dashboard')
   }, [loadAi])
   const dockerSnapshot = useDockerStore((state) => state.snapshot)
   const loadDocker = useDockerStore((state) => state.load)

@@ -15,9 +15,9 @@ import {
 import { ConfirmButton } from '@/app/components/ControlActions'
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { usePortListeners } from '@/hooks'
-import { useConflictsStore } from '@/stores/conflictsStore'
+import { subscribeConflictsPolling, useConflictsStore } from '@/stores/conflictsStore'
 import { usePortsStore } from '@/stores/portsStore'
-import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { subscribeWorkspacePolling, useWorkspaceStore } from '@/stores/workspaceStore'
 import type {
   DependencyView,
   PortCandidate,
@@ -417,6 +417,12 @@ export function WorkspacesPage() {
   useEffect(() => {
     void load()
     void loadConflicts()
+    const releaseWorkspace = subscribeWorkspacePolling('workspaces')
+    const releaseConflicts = subscribeConflictsPolling('workspaces')
+    return () => {
+      releaseWorkspace()
+      releaseConflicts()
+    }
   }, [load, loadConflicts])
 
   const projectsWithoutWorkspace = projects.filter(

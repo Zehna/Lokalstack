@@ -11,7 +11,8 @@ import {
   stopManagedService,
   stopWorkspaceServices,
 } from '@/services/native/ports'
-import { useControlStore } from '@/stores/controlStore'
+import { recordAuditEntry } from '@/stores/auditTrail'
+import { createPollingOwner } from '@/stores/pollingOwner'
 import type { LogLine, ManagedActionOutcome, WorkspaceView } from '@/types/domain'
 
 /** Workspace lifecycle actions for the session audit trail. */
@@ -41,6 +42,8 @@ interface WorkspaceState {
   logLines: LogLine[]
   /** Last polled log index (incremental fetch cursor). */
   logCursor: number
+  /** True while a log fetch is in flight (overlap guard, spec §7). */
+  logPolling: boolean
 
   load: () => Promise<void>
   refresh: () => Promise<void>
@@ -58,9 +61,6 @@ interface WorkspaceState {
   clearLogs: () => void
 }
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
-let nextEntryId = 1
-
 function record(
   action: WorkspaceAction,
   subject: string,
@@ -68,12 +68,47 @@ function record(
   message: string,
   pid: number | null = null,
 ): void {
-  const control = useControlStore.getState()
-  const next = [
-    ...control.history,
-    { id: nextEntryId++, at: Date.now(), action, subject, pid, outcome, message },
-  ].slice(-100)
-  useControlStore.setState({ history: next })
+  recordAuditEntry(action, subject, outcome, message, pid)
+}
+
+/* -------------------------------------------------------------------------
+ * Polling lifecycle — named-subscription, single shared timer (Phase 10A
+ * ownership audit). Each consumer acquires by stable id and receives a
+ * structurally-paired, idempotent release closure. Duplicate acquisition
+ * from one consumer = ONE subscription; release cannot underflow.
+ * ---------------------------------------------------------------------- */
+const workspacePollOwner = createPollingOwner(WORKSPACE_POLL_MS, () => {
+  void useWorkspaceStore.getState().refresh()
+})
+
+/**
+ * Acquire the 2 s managed-state cycle for one logical consumer (e.g.
+ * `'dashboard'`, `'services'`). Idempotent per consumer. Returns the
+ * release closure to call from the consumer's `useEffect` cleanup.
+ */
+export function subscribeWorkspacePolling(consumerId: string): () => void {
+  return workspacePollOwner.acquire(consumerId)
+}
+
+/** Convenience for pages without a stable id: acquire + immediately hand
+ * back the release (same semantics, caller must keep the closure). */
+export function startWorkspacePolling(): () => void {
+  return subscribeWorkspacePolling('anonymous')
+}
+
+/** Test observability: distinct consumers / timer state. */
+export function workspacePollingSubscribers(): number {
+  return workspacePollOwner.consumerCount()
+}
+
+/** Test observability: whether the shared interval exists. */
+export function workspacePollingRunning(): boolean {
+  return workspacePollOwner.isRunning()
+}
+
+/** Test-only teardown: release every consumer and stop the timer. */
+export function resetWorkspacePolling(): void {
+  workspacePollOwner.releaseAll()
 }
 
 /** Classify a backend refusal into an honest history outcome. */
@@ -101,13 +136,6 @@ function outcomeMessage(outcome: ManagedActionOutcome): string {
  * server-side — this store only ever passes opaque ids back.
  */
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
-  function ensurePolling(): void {
-    if (pollTimer !== null) return
-    pollTimer = setInterval(() => {
-      void get().refresh()
-    }, WORKSPACE_POLL_MS)
-  }
-
   async function runRefresh(): Promise<void> {
     if (get().refreshing) return
     set({ refreshing: true })
@@ -138,12 +166,12 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     openLogManagedId: null,
     logLines: [],
     logCursor: 0,
+    logPolling: false,
 
     load: async () => {
       if (get().loading === false && get().workspaces.length === 0) {
         set({ loading: true })
       }
-      ensurePolling()
       await runRefresh()
     },
 
@@ -256,12 +284,16 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     },
 
     openLogs: (managedId) => {
-      set({ openLogManagedId: managedId, logLines: [], logCursor: 0 })
+      set({ openLogManagedId: managedId, logLines: [], logCursor: 0, logPolling: false })
     },
 
     pollLogs: async () => {
       const managedId = get().openLogManagedId
       if (managedId === null) return
+      // In-flight guard: the 500 ms UI poll is shorter than a slow log
+      // fetch; never let two log requests overlap (out-of-order batches).
+      if (get().logPolling) return
+      set({ logPolling: true })
       try {
         const batch = await getServiceLogs(managedId, get().logCursor)
         if (batch.lines.length > 0) {
@@ -275,6 +307,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
       } catch {
         // The managed process may have exited; the next refresh updates
         // the state view. Log polling failures are not fatal.
+      } finally {
+        set({ logPolling: false })
       }
     },
 

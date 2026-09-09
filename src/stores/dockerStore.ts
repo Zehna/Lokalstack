@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 import { getDockerSnapshot, refreshDocker } from '@/services/native/ports'
-import { useControlStore } from '@/stores/controlStore'
+import { recordAuditEntry } from '@/stores/auditTrail'
 import type { ContainerProjectLink, DockerContainer, DockerEngineSnapshot } from '@/types/domain'
 
 /** Engine/list polling cadence (spec §65) — backend caches at 5 s too. */
@@ -20,7 +20,6 @@ interface DockerState {
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
-let nextEntryId = 1
 
 /** Record a transition event in the shared session audit trail. */
 function record(
@@ -29,12 +28,7 @@ function record(
   outcome: 'success' | 'failure' | 'stale',
   message: string,
 ): void {
-  const control = useControlStore.getState()
-  const next = [
-    ...control.history,
-    { id: nextEntryId++, at: Date.now(), action, subject, pid: null, outcome, message },
-  ].slice(-100)
-  useControlStore.setState({ history: next })
+  recordAuditEntry(action, subject, outcome, message)
 }
 
 /**
