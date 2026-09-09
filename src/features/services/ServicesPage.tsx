@@ -4,9 +4,10 @@ import { RefreshButton } from '@/app/components/RefreshButton'
 import { ControlActions } from '@/app/components/ControlActions'
 import { usePortListeners } from '@/hooks'
 import { useAiRuntimeStore } from '@/stores/aiRuntimeStore'
+import { useDockerStore } from '@/stores/dockerStore'
 import { usePortsStore } from '@/stores/portsStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
-import type { AiHealth, ServiceCategory } from '@/types/domain'
+import type { AiHealth, ContainerPortOwnership, ServiceCategory } from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 import { groupListenersByProcess } from './groupProcesses'
 import {
@@ -51,10 +52,13 @@ export function ServicesPage() {
   const loadWorkspaces = useWorkspaceStore((state) => state.load)
   const aiRuntimes = useAiRuntimeStore((state) => state.runtimes)
   const loadAiRuntimes = useAiRuntimeStore((state) => state.load)
+  const dockerSnapshot = useDockerStore((state) => state.snapshot)
+  const loadDocker = useDockerStore((state) => state.load)
   useEffect(() => {
     void loadWorkspaces()
     void loadAiRuntimes()
-  }, [loadWorkspaces, loadAiRuntimes])
+    void loadDocker()
+  }, [loadWorkspaces, loadAiRuntimes, loadDocker])
   // Managed root PIDs — any discovered PID in this set is LocalStack-managed.
   const managedPids = new Set(
     workspaces.flatMap((w) =>
@@ -77,6 +81,14 @@ export function ServicesPage() {
   const projectByPid = usePortsStore((state) => state.projectByPid)
   const controlByPid = usePortsStore((state) => state.controlByPid)
 
+  // Phase 9: published host port → container ownership overlay.
+  const dockerOwnershipByPort = useMemo(() => {
+    const map = new Map<number, ContainerPortOwnership>()
+    for (const ownership of dockerSnapshot?.portOwnerships ?? []) {
+      if (!map.has(ownership.hostPort)) map.set(ownership.hostPort, ownership)
+    }
+    return map
+  }, [dockerSnapshot])
   const groups = useMemo(
     () =>
       groupListenersByProcess(listeners, processByPid, serviceByPid, projectByPid).filter(
@@ -192,6 +204,22 @@ export function ServicesPage() {
                       EXTERNAL
                     </span>
                   )}
+
+                  {/* Phase 9: containerized service — the owning PID is the
+                      Docker proxy; the real workload is a container. */}
+                  {group.ports.some((p) => dockerOwnershipByPort.has(p)) && (() => {
+                    const ownership = group.ports
+                      .map((p) => dockerOwnershipByPort.get(p))
+                      .find((o) => o !== undefined)!
+                    return (
+                      <span
+                        className="rounded border border-sky-900/60 bg-sky-950/40 px-1.5 py-0.5 text-xs text-sky-400"
+                        title={`Docker container ${ownership.containerName} (${ownership.image ?? 'unknown image'}) publishes host port ${ownership.hostPort} → container port ${ownership.containerPort}${ownership.composeProject ? ` · compose: ${ownership.composeProject}${ownership.composeService ? `/${ownership.composeService}` : ''}` : ''}`}
+                      >
+                        CONTAINER
+                      </span>
+                    )
+                  })()}
 
                   {group.identity !== null && (
                     <>

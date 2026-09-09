@@ -632,7 +632,90 @@ such data can be generated. No pull/delete/load/unload/copy model, no
 workflow submission, no configuration mutation. Nothing is transmitted off
 the machine.
 
-## Known limitations (Phase 2–8)
+### Docker & container intelligence (Phase 9)
+
+```
+Docker Engine (Windows named pipe \\.\pipe\docker_engine)
+      ↓  read-only GET allowlist (no CLI, no tcp://2375, no POST)
+DockerEngineSnapshot { engine info, containers, projectLinks, portOwnerships }
+      ↓                      ↓
+Container → Compose → LocalStack Project   Published host port → container overlay
+```
+
+**Transport (spec §2–3).** A small bounded HTTP/1.1 client speaks directly
+to Docker Desktop's named pipe `\\.\pipe\docker_engine` — no `docker.exe`
+CLI parsing, no `tcp://localhost:2375` fallback, no `daemon.json` changes.
+The pipe is opened with `CreateFileW`; the handle is owned by a single
+`std::fs::File` (RAII close, no guard/double-close). Responses are read
+under an 8 MB cap with a 3 s timeout; `Content-Length` and chunked bodies
+are both handled.
+
+**Read-only allowlist (spec §9, §51).** The only requestable paths are
+`/_ping`, `/version`, `/info`, `/containers/json`,
+`/containers/{id}/json`, `/containers/{id}/stats?stream=false` — checked
+*before any I/O*. There is no frontend command carrying a method, path, or
+pipe name; the surface is exactly `get_docker_snapshot`, `refresh_docker`,
+and `get_container_details(trusted container id)`. Mutation endpoints
+(stop/kill/create/exec/images) are refused by construction, and a test
+proves it end-to-end against the live-shaped transport.
+
+**Engine API versioning (spec §4).** `/version` is fetched once per engine
+session (10 min cache) and its `Version`/`ApiVersion`/`Os`/`Arch` are
+shown; the adapter uses only long-stable list/inspect/stats shapes, so a
+newer daemon never breaks discovery.
+
+**Container model (spec §5–7).** `DockerContainer` carries id/shortId,
+name, image + imageId, normalized `state` (created/running/paused/
+restarting/removing/exited/dead/unknown) and `health`
+(healthy/unhealthy/starting/none/unknown). Health comes **only** from
+Healthcheck evidence — inspect `State.Health.Status`, or a `(healthy)`-style
+list `Status` suffix; a running container with no healthcheck is `none`,
+never `healthy`.
+
+**Ports (spec §11–14).** Published mappings keep host and container ports
+distinct (`hostIp`/`hostPort` → `containerPort`/`protocol`), including
+specific-IP binds and multiple mappings. UDP mappings are displayed as
+Docker metadata only — the Phase 1 scanner is TCP and we do not pretend
+otherwise. The `portOwnerships` index (one entry per published TCP host
+port, with container/compose/project facts) overlays the Ports and Services
+views: the host PID of the Docker proxy listener stays authoritative for
+process facts, while the container supplies the ownership dimension a PID
+cannot.
+
+**Compose & project association (spec §15–20, §55–56).** Only canonical
+labels are read (`com.docker.compose.project`, `.service`,
+`.container-number`, `.project.working_dir`, `.project.config_files`); a
+similar container *name* is never evidence. Association confidence:
+`exact` (compose working dir == project root), `high` (bind mount ==
+project root), `medium` (project root nested under a mount), `low`
+(unique compose-project-name == project basename). Ambiguous name matches
+(sibling projects) associate with **nothing**. Bind-mount paths are used
+internally as evidence; contents are never opened.
+
+**Cadence & bounds (spec §26–28).** Engine+list 5 s, stats 8 s,
+version 10 min; manual refresh bypasses caches. Inspect/stats run only for
+running containers; the per-container cache is keyed by container ID and
+pruned the moment a container disappears. When the engine is away, an
+exponential backoff (5 s doubling to 60 s) prevents pipe hammering.
+Everything runs in `spawn_blocking` off the discovery loop.
+
+**Typed errors (spec §29–30, §66).** `docker_unavailable` (honest state,
+not an app error), `access_denied` (informational only — no elevation, no
+ACL changes), `timeout`, `api_unsupported`, `malformed_response`,
+`response_too_large`, `engine_error`. UI labels never contain pipe
+internals.
+
+**Privacy (spec §46–48).** `Config.Env` is never even parsed into an
+intermediate structure; arbitrary labels, auth data, registry credentials,
+and raw inspect payloads never cross to React (the DTO is the boundary, and
+a fixture test proves secrets in the payload do not survive serialization).
+Container logs are not ingested.
+
+**No control (spec §44–45).** No start/stop/restart/kill/pause/remove/
+create/exec/compose lifecycle exists anywhere in the adapter, the Tauri
+commands, or the UI. Phase 9 observes, identifies, maps, and explains.
+
+## Known limitations (Phase 2–9)
 
 - Windows-only. Other platforms get an explicit error, not silent emptiness.
 - TCP only — UDP discovery would be a separate, explicit design.

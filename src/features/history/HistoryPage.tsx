@@ -13,7 +13,7 @@ function actionIcon(action: string) {
   if (action === 'stop' || action === 'service_stop' || action === 'workspace_stop') {
     return <Square className="h-3.5 w-3.5 text-amber-400" strokeWidth={1.8} />
   }
-  if (action === 'port_conflict' || action === 'conflict_detected' || action === 'dependency_unavailable' || action === 'workspace_blocked' || action === 'ai_runtime_unavailable') {
+  if (action === 'port_conflict' || action === 'conflict_detected' || action === 'dependency_unavailable' || action === 'workspace_blocked' || action === 'ai_runtime_unavailable' || action === 'docker_engine_unavailable' || action === 'container_stopped_observed' || action === 'container_health_unhealthy') {
     return <TriangleAlert className="h-3.5 w-3.5 text-amber-400" strokeWidth={1.8} />
   }
   return <RefreshCw className="h-3.5 w-3.5 text-sky-400" strokeWidth={1.8} />
@@ -53,6 +53,13 @@ const ACTION_LABELS: Record<string, string> = {
   ai_runtime_loading: 'AI loading',
   ai_model_loaded: 'Model in',
   ai_model_unloaded: 'Model out',
+  // Phase 9 Docker observations (deduped, observed-not-initiated wording).
+  docker_engine_available: 'Docker up',
+  docker_engine_unavailable: 'Docker down',
+  container_started_observed: 'Cont. up',
+  container_stopped_observed: 'Cont. down',
+  container_health_unhealthy: 'Unhealthy',
+  container_health_recovered: 'Health ok',
 }
 
 /**

@@ -1,11 +1,18 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ArrowUpDown, Search } from 'lucide-react'
 
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { ControlActions } from '@/app/components/ControlActions'
 import { usePortListeners } from '@/hooks'
+import { useDockerStore } from '@/stores/dockerStore'
 import { usePortsStore } from '@/stores/portsStore'
-import type { PortListener, ProcessInfo, ProjectIdentity, ServiceIdentity } from '@/types/domain'
+import type {
+  ContainerPortOwnership,
+  PortListener,
+  ProcessInfo,
+  ProjectIdentity,
+  ServiceIdentity,
+} from '@/types/domain'
 import { formatBytes, formatCpuPercent, formatTime } from '@/utils/format'
 
 /** Column keys the table can sort by. Only port sorting is required in Phase 1. */
@@ -60,6 +67,21 @@ export function PortsPage() {
   const lastUpdated = usePortsStore((state) => state.lastUpdated)
   const durationMs = usePortsStore((state) => state.durationMs)
   const refreshListeners = usePortsStore((state) => state.refreshListeners)
+
+  // Phase 9: published host port → container ownership overlay (the host
+  // PID of a Docker proxy listener is complemented by container evidence).
+  const dockerSnapshot = useDockerStore((state) => state.snapshot)
+  const loadDocker = useDockerStore((state) => state.load)
+  useEffect(() => {
+    void loadDocker()
+  }, [loadDocker])
+  const dockerOwnershipByPort = useMemo(() => {
+    const map = new Map<number, ContainerPortOwnership>()
+    for (const ownership of dockerSnapshot?.portOwnerships ?? []) {
+      if (!map.has(ownership.hostPort)) map.set(ownership.hostPort, ownership)
+    }
+    return map
+  }, [dockerSnapshot])
 
   const [query, setQuery] = useState('')
   const [direction, setDirection] = useState<SortDirection>('asc')
@@ -182,6 +204,7 @@ export function PortsPage() {
                 const process = processByPid.get(listener.pid)
                 const identity = serviceByPid.get(listener.pid)
                 const project = projectByPid.get(listener.pid)
+                const containerOwnership = dockerOwnershipByPort.get(listener.port)
                 const rowKey = `${listener.ipVersion}-${listener.localAddress}-${listener.port}-${listener.pid}`
                 return (
                   <tr
@@ -224,6 +247,14 @@ export function PortsPage() {
                     </td>
                     <td className="px-4 py-2.5 text-right font-mono text-slate-400">
                       {listener.pid}
+                      {containerOwnership !== undefined && (
+                        <span
+                          className="ml-2 rounded border border-sky-900/60 bg-sky-950/40 px-1 py-0.5 font-sans text-[10px] text-sky-400"
+                          title={`Port ${listener.port} is published by Docker container ${containerOwnership.containerName} (${containerOwnership.image ?? 'unknown image'}) — host port ${containerOwnership.hostPort} → container port ${containerOwnership.containerPort}${containerOwnership.composeProject ? ` · compose: ${containerOwnership.composeProject}${containerOwnership.composeService ? `/${containerOwnership.composeService}` : ''}` : ''}`}
+                        >
+                          {containerOwnership.containerName}
+                        </span>
+                      )}
                     </td>
                     <td
                       className="px-4 py-2.5 text-right font-mono text-slate-400"

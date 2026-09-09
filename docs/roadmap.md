@@ -488,19 +488,32 @@ inherited (no .env integration yet).
   `ai_runtime_unavailable`, `ai_runtime_loading`, `ai_model_loaded`,
   `ai_model_unloaded`).
 
-## Phase 9 — Docker
+## Phase 9 — Docker (delivered)
 
 **Goal:** include containerized services.
 
-- Read-only Docker integration: containers publishing localhost ports, mapped
-  to their images. No Docker configuration changes.
+- Read-only Docker Engine integration over the Windows named pipe — no CLI
+  parsing, no tcp://2375, no configuration changes.
+- Engine + container snapshot (version/API/OS/arch, states, Healthcheck-only
+  health, images, networks, bind mounts as metadata), published host→container
+  port mappings, compose project/service labels, evidence-graded
+  container → LocalStack project association (exact/high/medium/low;
+  ambiguous name matches never associate).
+- Port/Services overlay: a published TCP host port shows its owning container
+  next to the host proxy PID; Docker absence is an honest state with backoff,
+  access-denied stays informational (no elevation).
+- Dedicated Docker page + dashboard summary + observed (not initiated)
+  history transitions. No container lifecycle, no exec, no log ingestion,
+  no environment variables, no arbitrary labels — a hard read-only allowlist
+  enforced before any I/O.
 
-## Phase 10 — Polish
+## Phase 10 — Product Hardening & Release 1.0
 
 **Goal:** make it a product.
 
-- History/event log of observations, preferences, onboarding, performance
-  work, packaging/installer hardening, accessibility pass.
+- Frontend regression tests (Vitest), CI, crash recovery, installer
+  (NSIS/MSI), startup behavior, settings, tray, performance profiling,
+  accessibility, update strategy, and user documentation.
 
 ---
 

@@ -421,6 +421,7 @@ export type ViewId =
   | 'ports'
   | 'workspaces'
   | 'ai-services'
+  | 'docker'
   | 'history'
   | 'settings'
 
@@ -646,4 +647,141 @@ export interface AiRuntimeSnapshot {
   latencyMs: number
   errorLabel?: string
   error?: AiProbeError
+}
+
+/* ------------------------------------------------------------------------
+ * Docker & container intelligence (Phase 9) — read-only observability
+ * ---------------------------------------------------------------------- */
+
+/** Container lifecycle state (mirrors Rust `ContainerState`). */
+export type ContainerState =
+  | 'created'
+  | 'running'
+  | 'paused'
+  | 'restarting'
+  | 'removing'
+  | 'exited'
+  | 'dead'
+  | 'unknown'
+
+/** Docker Healthcheck evidence — distinct from running state. */
+export type ContainerHealth =
+  | 'healthy'
+  | 'unhealthy'
+  | 'starting'
+  | 'none'
+  | 'unknown'
+
+/** Typed Docker failure (mirrors Rust `DockerFailure`). */
+export type DockerFailure =
+  | { kind: 'docker_unavailable'; detail: string }
+  | { kind: 'access_denied'; detail: string }
+  | { kind: 'timeout' }
+  | { kind: 'api_unsupported'; detail: string }
+  | { kind: 'malformed_response'; detail: string }
+  | { kind: 'response_too_large'; limit: number }
+  | { kind: 'engine_error'; detail: string }
+
+/** Compose identity from canonical labels only. */
+export interface DockerComposeIdentity {
+  projectName?: string
+  serviceName?: string
+  containerNumber?: string
+  workingDir?: string
+  configFiles?: string
+}
+
+/** One published/exposed port mapping — host and container stay distinct. */
+export interface ContainerPort {
+  protocol: string
+  containerPort: number
+  hostIp?: string
+  hostPort?: number
+  published: boolean
+}
+
+/** One Docker network the container is attached to (metadata only). */
+export interface ContainerNetwork {
+  name: string
+  ipAddress?: string
+  gateway?: string
+}
+
+/** One read-only stats observation. */
+export interface ContainerStats {
+  cpuPercent?: number
+  memoryUsedBytes?: number
+  memoryLimitBytes?: number
+  networkRxBytes?: number
+  networkTxBytes?: number
+}
+
+/** Normalized container — the only container shape that crosses to React. */
+export interface DockerContainer {
+  id: string
+  shortId: string
+  name: string
+  image: string
+  imageId?: string
+  imageDigest?: string
+  state: ContainerState
+  status: string
+  health: ContainerHealth
+  createdAt?: number
+  ports: ContainerPort[]
+  compose?: DockerComposeIdentity
+  networks: ContainerNetwork[]
+  /** Bind mounts (source, destination) — metadata only, contents never read. */
+  mounts: [string, string][]
+  stats?: ContainerStats
+}
+
+/** Engine identity — useful facts only. */
+export interface DockerEngineInfo {
+  version?: string
+  apiVersion?: string
+  os?: string
+  arch?: string
+}
+
+/** Evidence-based container → LocalStack project association. */
+export interface ContainerProjectLink {
+  containerId: string
+  projectId?: string
+  confidence: 'exact' | 'high' | 'medium' | 'low' | 'unknown'
+  evidence: string
+}
+
+/** Published TCP host port → owning container (overlay metadata). */
+export interface ContainerPortOwnership {
+  hostPort: number
+  hostIp?: string
+  containerId: string
+  containerName: string
+  containerPort: number
+  protocol: string
+  image?: string
+  composeProject?: string
+  composeService?: string
+  projectId?: string
+}
+
+/** Full Docker snapshot from `get_docker_snapshot` / `refresh_docker`. */
+export interface DockerEngineSnapshot {
+  available: boolean
+  engine?: DockerEngineInfo
+  containers: DockerContainer[]
+  projectLinks: ContainerProjectLink[]
+  portOwnerships: ContainerPortOwnership[]
+  truncated: boolean
+  capturedAt: number
+  latencyMs: number
+  error?: DockerFailure
+}
+
+/** Per-container details from `get_container_details`. */
+export interface ContainerDetails {
+  container: DockerContainer
+  projectEvidence?: string
+  projectConfidence?: string
 }

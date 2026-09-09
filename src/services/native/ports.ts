@@ -11,7 +11,9 @@ import { invoke } from '@tauri-apps/api/core'
 
 import type {
   AiRuntimeSnapshot,
+  ContainerDetails,
   DependencyTarget,
+  DockerEngineSnapshot,
   LaunchCandidate,
   LogBatch,
   ManagedActionOutcome,
@@ -193,4 +195,23 @@ export async function removeWorkspaceDependency(workspaceId: string, dependencyI
  */
 export async function getAiRuntimes(bypassCache = false): Promise<AiRuntimeSnapshot[]> {
   return invoke<AiRuntimeSnapshot[]>('get_ai_runtimes', { bypassCache })
+}
+
+/* ------------------------------------------------------------------------
+ * Phase 9 — Docker intelligence (read-only; no lifecycle, no exec)
+ * ---------------------------------------------------------------------- */
+
+/** Docker snapshot (cached ~5 s); Docker absence is an honest state. */
+export async function getDockerSnapshot(): Promise<DockerEngineSnapshot> {
+  return invoke<DockerEngineSnapshot>('get_docker_snapshot')
+}
+
+/** Manual refresh — bypasses the list/version/stats caches. */
+export async function refreshDocker(): Promise<DockerEngineSnapshot> {
+  return invoke<DockerEngineSnapshot>('refresh_docker')
+}
+
+/** Per-container details by trusted container ID from the backend snapshot. */
+export async function getContainerDetails(containerId: string): Promise<ContainerDetails> {
+  return invoke<ContainerDetails>('get_container_details', { containerId })
 }

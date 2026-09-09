@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Activity, Boxes, BrainCircuit, TriangleAlert } from 'lucide-react'
+import { Activity, Boxes, BrainCircuit, Container, TriangleAlert } from 'lucide-react'
 
 import { RefreshButton } from '@/app/components/RefreshButton'
 import { SummaryCard } from './components/SummaryCard'
@@ -7,6 +7,7 @@ import { usePortListeners } from '@/hooks'
 import { useAiRuntimeStore } from '@/stores/aiRuntimeStore'
 import { useAppStore } from '@/stores/appStore'
 import { useConflictsStore } from '@/stores/conflictsStore'
+import { useDockerStore } from '@/stores/dockerStore'
 import { usePortsStore } from '@/stores/portsStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import type { PortListener, ProcessInfo, ProjectIdentity, ServiceIdentity } from '@/types/domain'
@@ -132,6 +133,11 @@ export function DashboardPage() {
   useEffect(() => {
     void loadAi()
   }, [loadAi])
+  const dockerSnapshot = useDockerStore((state) => state.snapshot)
+  const loadDocker = useDockerStore((state) => state.load)
+  useEffect(() => {
+    void loadDocker()
+  }, [loadDocker])
 
   const listenerCount = listeners.length
   const projects = usePortsStore((state) => state.projects)
@@ -202,6 +208,33 @@ export function DashboardPage() {
             aiRuntimes.filter((r) => r.health === 'loading').length
           } loading`}
           footer={`${aiRuntimes.reduce((count, r) => count + r.loadedModels.length, 0)} models loaded`}
+        />
+        <SummaryCard
+          title="Docker"
+          icon={<Container className="h-4 w-4 text-sky-400" strokeWidth={1.8} />}
+          value={
+            dockerSnapshot === null
+              ? '…'
+              : dockerSnapshot.available
+                ? String(dockerSnapshot.containers.length)
+                : '—'
+          }
+          detail={
+            dockerSnapshot?.available
+              ? `${dockerSnapshot.containers.filter((c) => c.state === 'running').length} running · ${
+                  dockerSnapshot.containers.filter((c) => c.health === 'unhealthy').length
+                } unhealthy`
+              : 'unavailable'
+          }
+          footer={`${
+            dockerSnapshot === null
+              ? 0
+              : new Set(
+                  dockerSnapshot.containers
+                    .map((c) => c.compose?.projectName)
+                    .filter((n): n is string => Boolean(n)),
+                ).size
+          } compose projects`}
         />
         <SummaryCard
           title="System Usage"

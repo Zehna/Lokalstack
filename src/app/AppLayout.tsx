@@ -4,6 +4,7 @@ import { Sidebar } from './components/Sidebar'
 import { NAV_ITEMS } from './navigation'
 import { AiServicesPage } from '@/features/ai-services/AiServicesPage'
 import { DashboardPage } from '@/features/dashboard/DashboardPage'
+import { DockerPage } from '@/features/docker/DockerPage'
 import { HistoryPage } from '@/features/history/HistoryPage'
 import { PortsPage } from '@/features/ports/PortsPage'
 import { ProjectsPage } from '@/features/projects/ProjectsPage'
@@ -20,6 +21,7 @@ const VIEWS: Record<ViewId, () => React.ReactElement> = {
   ports: PortsPage,
   workspaces: WorkspacesPage,
   'ai-services': AiServicesPage,
+  docker: DockerPage,
   history: HistoryPage,
   settings: SettingsPage,
 }

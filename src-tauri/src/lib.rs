@@ -16,6 +16,7 @@
 mod ai;
 mod conflicts;
 mod control;
+mod docker;
 mod dependencies;
 mod discovery;
 mod health;
@@ -38,6 +39,7 @@ pub fn run() {
         .manage(control::ControlEngineState::default())
         .manage(workspace::WorkspaceEngineState::default())
         .manage(ai::registry::AiEngineState::default())
+        .manage(docker::DockerEngineState::real())
         .setup(|app| {
             // Readiness/exit monitor for managed processes (idempotent).
             use tauri::Manager;
@@ -62,6 +64,9 @@ pub fn run() {
             conflicts::evaluate_port,
             conflicts::find_free_ports,
             dependencies::get_workspaces_readiness,
+            docker::get_docker_snapshot,
+            docker::refresh_docker,
+            docker::get_container_details,
             dependencies::list_dependency_targets,
             dependencies::add_workspace_dependency,
             dependencies::remove_workspace_dependency,

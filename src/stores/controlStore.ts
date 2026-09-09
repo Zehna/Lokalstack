@@ -37,6 +37,13 @@ export interface ControlHistoryEntry {
     | 'ai_runtime_loading'
     | 'ai_model_loaded'
     | 'ai_model_unloaded'
+    // Phase 9 Docker observations (deduped; never imply LocalStack acted).
+    | 'docker_engine_available'
+    | 'docker_engine_unavailable'
+    | 'container_started_observed'
+    | 'container_stopped_observed'
+    | 'container_health_unhealthy'
+    | 'container_health_recovered'
   /** What the action targeted (human-facing display name). */
   subject: string
   /** PID when the action had one (advisory, from the snapshot). */

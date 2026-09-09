@@ -47,6 +47,9 @@ windows-sys = { version = "0.60", features = [
   "Win32_System_Console",
   "Win32_System_Pipes",
   "Win32_System_Diagnostics_ToolHelp",
+  # Docker Engine named-pipe transport (Phase 9): CreateFileW on
+  # \\.\pipe\docker_engine lives in Storage::FileSystem.
+  "Win32_Storage_FileSystem",
   # Command-line retrieval (Phase 3): NtQueryInformationProcess (Wdk) and
   # ReadProcessMemory for reading the target's RTL_USER_PROCESS_PARAMETERS.
   # Win32_System_Kernel gates the PEB/PROCESS_BASIC_INFORMATION structs.

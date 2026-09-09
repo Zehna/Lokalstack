@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   PlugZap,
   Settings as SettingsIcon,
+  Container,
   FolderKanban,
   Radar,
 } from 'lucide-react'
@@ -28,6 +29,7 @@ const NAV_ICONS: Record<ViewId, LucideIcon> = {
   ports: Radar,
   workspaces: Boxes,
   'ai-services': Bot,
+  docker: Container,
   history: Clock,
   settings: SettingsIcon,
 }
