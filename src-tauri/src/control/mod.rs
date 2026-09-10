@@ -146,12 +146,15 @@ pub(crate) fn control_for_process(
         .or_else(|| process.name.clone())
         .unwrap_or_else(|| format!("PID {}", process.pid));
     let target = if capability.canStop {
-        let id = registry.register(trusted_target_of(
+        // A poisoned registry refuses registration (fail closed): the PID
+        // gets no control target this cycle — shown as uncontrollable —
+        // rather than handing out identities from inconsistent state.
+        let id = registry.try_register(trusted_target_of(
             process,
             service,
             capability.canStop,
         ));
-        Some(ControlTarget {
+        id.ok().map(|id| ControlTarget {
             id,
             displayName: display_name.clone(),
             processName: process.name.clone(),
@@ -772,15 +775,29 @@ mod tests {
                     }
                     code.push_str(rest);
                     let code = code.replace("/*", "").replace("*/", "");
-                    // Strip string-literal contents so this guard's own
-                    // needles do not self-match; a real API call in code is
-                    // an identifier, not a literal, and stays visible.
-                    // (Naive scanner: raw strings with embedded quotes could
-                    // desync it — acceptable for this source-level guard.)
+                    // Strip string- and char-literal contents so this
+                    // guard's own needles do not self-match; a real API call
+                    // in code is an identifier, not a literal, and stays
+                    // visible. (Naive scanner: raw strings with embedded
+                    // quotes could desync it — acceptable for this
+                    // source-level guard.)
                     let mut no_strings = String::with_capacity(code.len());
                     let mut in_string = false;
+                    let mut in_char = false;
                     let mut escaped = false;
                     for ch in code.chars() {
+                        if in_char {
+                            if escaped {
+                                escaped = false;
+                                continue;
+                            }
+                            match ch {
+                                '\\' => escaped = true,
+                                '\'' => in_char = false,
+                                _ => {}
+                            }
+                            continue;
+                        }
                         if in_string {
                             if escaped {
                                 escaped = false;
@@ -800,6 +817,9 @@ mod tests {
                             '"' => {
                                 in_string = true;
                                 no_strings.push('"');
+                            }
+                            '\'' => {
+                                in_char = true;
                             }
                             _ => no_strings.push(ch),
                         }

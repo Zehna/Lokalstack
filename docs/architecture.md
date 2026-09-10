@@ -792,6 +792,68 @@ commands, or the UI. Phase 9 observes, identifies, maps, and explains.
 - GPU telemetry beyond what a runtime itself reports (driver-level stats) is
   out of scope by design in Phase 8.
 
+## Unsafe FFI audit (Phase 10B)
+
+### Local diagnostics (Phase 10B)
+
+LocalStack writes a bounded, local-only diagnostic log to
+`%LOCALAPPDATA%\localstack-control-center\localstack.log`
+(`FOLDERID_LocalAppData`; no roaming, no admin). Properties:
+
+- **Session-bounded** (2,000 lines) and best-effort — a logging failure can
+  never fail the app.
+- **Redacted**: every line passes a deterministic redactor covering
+  `key=value` / `key:value`, `Authorization: Bearer …` (all splits), bare
+  `Bearer <token>`, and `--api-key/--token/--password <value>` forms.
+- **Panic hook**: panic payloads pass the same redaction path; only the
+  message + source location are recorded, then the default hook runs. No
+  telemetry, no network, no crash service.
+- **No command lines**: production diagnostics carry fixed strings + typed
+  codes only (subsystem, error class) — never process argv, environment
+  variables, Docker `Config.Env`, prompts, or cookies. Managed-service
+  stdout/stderr goes to the UI's bounded log rings, not the diagnostics
+  file.
+
+### Workspace registry poison policy (Phase 10B correction)
+
+The launch-spec and managed-process registries participate in
+**process-control mutations**, so a poisoned lock quarantines lifecycle
+control (sticky flag): start/stop/restart/force refuse with the typed
+`WORKSPACE_STATE_UNAVAILABLE` outcome before any spec resolution, PID read,
+or FFI call — no fallback to raw PID, executable name, or frontend
+metadata. Read paths recover the guard (views stay alive). Recovery
+rebuilds a NEW clean map (specs re-derive on next create/refresh; managed
+entries become External — the documented restart semantic) before control
+returns. The external **control-target registry** (Phase 5) remains fully
+fail-closed on poison: resolution returns `Unknown` and no new targets are
+issued.
+
+All `unsafe` code is confined to the Windows FFI boundary modules. Every
+block carries a `SAFETY:` comment stating its ownership invariant. The
+complete inventory:
+
+| Module | Unsafe surface | Purpose / justification | Key invariants |
+|---|---|---|---|
+| `discovery/windows.rs` | `GetExtendedTcpTable` calls | Read the OS TCP listener tables (the foundation of all discovery) | Buffer sized via probe call; truncated tables rejected, not trusted |
+| `process/windows.rs` | `OpenProcess`, `GetProcessTimes`, `QueryFullProcessImageNameW`, `ReadProcessMemory` + `NtQueryInformationProcess`, `GetProcessMemoryInfo`, ToolHelp snapshots | Per-PID process intelligence (identity, CPU, memory, command line) | `PROCESS_QUERY_LIMITED_INFORMATION` minimum rights; handle wrapped in an RAII guard (closes exactly once); PID + creation-time identity checked after every handle acquisition (PID-reuse guard) |
+| `control/windows.rs` | `OpenProcess`, `TerminateProcess` | Confirmed End Process for eligible external targets | Registry resolution → re-inspection → identity revalidation → policy recomputation *before* the unsafe call; terminate right is requested only at action time |
+| `workspace/windows.rs` | `CreateProcessW` + attribute list, pipe `CreatePipe`, `WaitForSingleObject`, `GetExitCodeProcess`, targeted `GenerateConsoleCtrlEvent`, `TerminateProcess` | Managed-service launch and lifecycle | `CREATE_NEW_PROCESS_GROUP` so the group id equals the root PID; group-0 broadcast impossible (never constructed); child pipe handles moved as integers and reconstructed in the reader thread (owned exactly once); wait/exit/terminate always revalidate the stored creation time |
+| `docker/transport.rs` | `CreateFileW` on `\\.\pipe\docker_engine` | Named-pipe transport to the Docker Engine (read-only allowlist) | Handle owned by a single `std::fs::File` (RAII, no double close); 8 MB streaming cap; all failures mapped to typed errors, never unwrapped |
+| `diagnostics.rs` | `SHGetKnownFolderPath` + `CoTaskMemFree` | Resolve the per-user log directory | Path buffer length computed before conversion; PWSTR freed exactly once; any failure silently disables logging (diagnostics never crash the app) |
+
+Notes:
+
+- No `unsafe` exists outside these modules (enforced by review; the static
+  guard tests pin the *behavioral* boundaries: no raw-PID commands, no
+  group-0 console events, no generic exec/HTTP/Docker primitives).
+- No `unsafe impl Send/Sync` anywhere; raw `HANDLE` (a pointer type, not
+  `Send`) is deliberately moved across threads as an `isize` and
+  reconstructed inside the owning thread with an exclusive-ownership
+  comment (workspace pipe readers).
+- Integer conversions in the FFI layer (`FILETIME` ticks → Unix ms, CPU
+  tick deltas, memory sizes) use checked/saturating arithmetic; malformed
+  or nonsensical local values degrade to `None`/0 rather than panicking.
+
 ## See also
 
 - `docs/roadmap.md` for the phase plan.

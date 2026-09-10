@@ -63,6 +63,9 @@ windows-sys = { version = "0.60", features = [
   # discovered processes (see docs/architecture.md).
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
+  # Local diagnostics (Phase 10B): SHGetKnownFolderPath/FOLDERID_LocalAppData
+  # for the log file location. Diagnostics are local-only — no telemetry.
+  "Win32_System_Com",
 ] }
 
 [dev-dependencies]

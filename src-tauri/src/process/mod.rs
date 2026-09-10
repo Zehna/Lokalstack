@@ -168,6 +168,9 @@ pub(crate) fn run_discovery_cycle(
                 )
             })
             .collect();
+        // Fail closed on poison: if the registry lock is poisoned, refresh
+        // simply issues no new targets — every control action resolves to
+        // Unknown and is refused until restart. Never reconstruct trust.
         control_registry.replace_all(trusted_targets);
         let controls: Vec<crate::control::PidControl> = response
             .processes

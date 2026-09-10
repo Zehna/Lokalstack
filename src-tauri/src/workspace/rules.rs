@@ -751,6 +751,35 @@ mod tests {
         assert_eq!(lines[2].line, "line 4");
     }
 
+    /// Phase 10B (spec §J): a pathological child emitting a huge burst of
+    /// output (and binary garbage) must not grow the ring beyond capacity,
+    /// must not panic on invalid UTF-8 (lossy conversion), and must keep
+    /// the newest lines visible.
+    #[test]
+    fn log_ring_survives_flood_and_binary_output() {
+        let mut ring = LogRing::new(1_000);
+        // 50_000 lines — far beyond capacity; only the last 1_000 remain.
+        for i in 0..50_000u64 {
+            ring.push(LogLine {
+                at: i,
+                stream: "stdout",
+                line: format!("flood {i}"),
+            });
+        }
+        assert_eq!(ring.len(), 1_000, "flood must not exceed the bound");
+        let lines = ring.snapshot();
+        assert_eq!(lines[0].line, "flood 49000", "oldest evicted, newest kept");
+        assert_eq!(lines[999].line, "flood 49999");
+        // Memory stays bounded by capacity, not by total pushed lines — the
+        // VecDeque can never exceed `capacity` entries (proven by len).
+
+        // Binary garbage must not panic (lossy conversion happens upstream
+        // in the pipe reader; the ring stores whatever text arrives).
+        let weird = "\u{0}\u{1}\u{FFFD} broken \u{7f}";
+        ring.push(LogLine { at: 1, stream: "stderr", line: weird.to_string() });
+        assert_eq!(ring.snapshot().last().map(|l| l.line.as_str()), Some(weird));
+    }
+
     #[test]
     fn log_ring_incremental_since() {
         let mut ring = LogRing::new(100);

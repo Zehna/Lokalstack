@@ -127,7 +127,7 @@ export const useAiRuntimeStore = create<AiRuntimeState>()((set, get) => {
     set({ refreshing: true })
     try {
       const previous = get().runtimes
-      const runtimes = await getAiRuntimes(bypassCache)
+      const runtimes = (await getAiRuntimes(bypassCache)) ?? []
       recordTransitions(previous, runtimes)
       const errorsByRuntime: Record<string, string> = {}
       for (const runtime of runtimes) {

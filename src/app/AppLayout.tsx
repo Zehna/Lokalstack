@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { Sidebar } from './components/Sidebar'
 import { NAV_ITEMS } from './navigation'
 import { AiServicesPage } from '@/features/ai-services/AiServicesPage'
@@ -40,7 +41,11 @@ export function AppLayout() {
     <div className="flex h-full">
       <Sidebar activeView={activeView} onSelectView={setActiveView} />
       <main className="min-w-0 flex-1 overflow-y-auto" aria-label={activeLabel}>
-        <ActiveView />
+        {/* Phase 10B (spec §K): a render exception in one view shows a
+            recoverable surface; the shell (sidebar + navigation) stays up. */}
+        <ErrorBoundary resetKey={activeView} onNavigateDashboard={() => setActiveView('dashboard')}>
+          <ActiveView />
+        </ErrorBoundary>
       </main>
     </div>
   )

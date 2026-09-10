@@ -16,6 +16,7 @@
 mod ai;
 mod conflicts;
 mod control;
+mod diagnostics;
 mod docker;
 mod dependencies;
 mod discovery;
@@ -23,6 +24,10 @@ mod health;
 mod intelligence;
 mod process;
 mod project;
+#[cfg(test)]
+mod resilience_stress;
+#[cfg(test)]
+mod safety_guards;
 mod workspace;
 
 /// Simple sample command proving the Tauri command boundary works end to end.
@@ -41,6 +46,10 @@ pub fn run() {
         .manage(ai::registry::AiEngineState::default())
         .manage(docker::DockerEngineState::real())
         .setup(|app| {
+            // Phase 10B (§X): local-only panic diagnostics, installed before
+            // any subsystem work. No telemetry, no network.
+            diagnostics::install_panic_hook();
+            diagnostics::info("startup", "LocalStack Control Center starting");
             // Readiness/exit monitor for managed processes (idempotent).
             use tauri::Manager;
             app.state::<workspace::WorkspaceEngineState>().spawn_monitor();

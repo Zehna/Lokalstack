@@ -94,6 +94,11 @@ pub(crate) struct TrustedLaunchSpec {
 #[derive(Default)]
 pub(crate) struct LaunchSpecRegistry {
     map: Mutex<HashMap<String, Arc<TrustedLaunchSpec>>>,
+    /// Set when the map mutex has ever been found poisoned. While set,
+    /// lifecycle-control mutations must refuse (fail closed) — the map may
+    /// have been mid-mutation when the panic happened. Read paths may still
+    /// recover the guard (they cannot trigger actions).
+    poisoned: std::sync::atomic::AtomicBool,
 }
 
 impl LaunchSpecRegistry {
@@ -169,11 +174,47 @@ impl LaunchSpecRegistry {
         self.lock().is_empty()
     }
 
+    /// Lock the launch-spec registry. Poison policy (Phase 10B correction,
+    /// spec §1): launch specs participate in **process-control mutations**
+    /// (a resolved spec is what a launch executes), so a poisoned map is
+    /// never trusted for lifecycle control. The guard is recovered for
+    /// read paths and recovery writes only, and the sticky poison flag
+    /// makes every mutating entry point refuse until an explicit
+    /// [`recover`](Self::recover) rebuilds a clean map.
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<TrustedLaunchSpec>>> {
         match self.map.lock() {
             Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+            Err(poisoned) => {
+                self.poisoned
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                crate::diagnostics::error(
+                    "workspace",
+                    "launch-spec registry lock poisoned; lifecycle control quarantined",
+                );
+                poisoned.into_inner()
+            }
         }
+    }
+
+    /// Whether trusted state is currently uncertain (poison observed, not
+    /// yet rebuilt). Lifecycle mutations must refuse while this is set.
+    pub(crate) fn poisoned(&self) -> bool {
+        self.poisoned.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Rebuild a NEW clean trusted state: drop every (possibly
+    /// inconsistent) entry and clear the quarantine flag. Specs are
+    /// re-derived from project manifests on the next workspace refresh —
+    /// they are backend-derived, never user data.
+    pub(crate) fn recover(&self) {
+        self.lock().clear();
+        self.poisoned.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Test-only: simulate a prior poisoning without a real panic.
+    #[cfg(test)]
+    pub(crate) fn mark_poisoned_for_test(&self) {
+        self.poisoned.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -225,6 +266,10 @@ impl ManagedEntry {
 #[derive(Default)]
 pub(crate) struct ManagedProcessRegistry {
     map: Mutex<HashMap<String, ManagedEntry>>,
+    /// Sticky poison flag — see [`LaunchSpecRegistry::poisoned`]. While set,
+    /// stop/restart/force must refuse: acting on a possibly-inconsistent
+    /// managed map could target a stale identity or a wrong process group.
+    poisoned: std::sync::atomic::AtomicBool,
 }
 
 impl ManagedProcessRegistry {
@@ -330,11 +375,48 @@ impl ManagedProcessRegistry {
         self.lock().is_empty()
     }
 
+    /// Lock the managed-process registry. Poison policy (Phase 10B
+    /// correction, spec §1): this map drives **destructive process-control
+    /// mutations** (CTRL_BREAK to a stored group id, TerminateProcess on a
+    /// stored identity). A panic mid-mutation could leave an entry with a
+    /// half-updated PID/group/state — recovering the guard and continuing
+    /// would risk acting on stale trusted data. The guard is recovered so
+    /// read-only views and cleanup stay alive, but the sticky poison flag
+    /// quarantines every mutating lifecycle path until an explicit
+    /// [`recover`](Self::recover) rebuilds a clean map.
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, ManagedEntry>> {
         match self.map.lock() {
             Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+            Err(poisoned) => {
+                self.poisoned
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                crate::diagnostics::error(
+                    "workspace",
+                    "managed-process registry lock poisoned; lifecycle control quarantined",
+                );
+                poisoned.into_inner()
+            }
         }
+    }
+
+    /// Whether trusted state is currently uncertain (poison observed, not
+    /// yet rebuilt). Lifecycle mutations must refuse while this is set.
+    pub(crate) fn poisoned(&self) -> bool {
+        self.poisoned.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Rebuild a NEW clean trusted state: drop every managed entry (they
+    /// become External — the documented app-restart semantic) and clear the
+    /// quarantine. Processes themselves are untouched.
+    pub(crate) fn recover(&self) {
+        self.lock().clear();
+        self.poisoned.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Test-only: simulate a prior poisoning without a real panic.
+    #[cfg(test)]
+    pub(crate) fn mark_poisoned_for_test(&self) {
+        self.poisoned.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

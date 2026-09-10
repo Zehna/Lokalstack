@@ -141,8 +141,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     set({ refreshing: true })
     try {
       const workspaces = await listWorkspaces()
+      // Phase 10B (§L): a contract-violating response (undefined/null) must
+      // degrade to an empty list, never crash the consuming view.
       set({
-        workspaces,
+        workspaces: workspaces ?? [],
         error: null,
         lastUpdated: Date.now(),
         loading: false,

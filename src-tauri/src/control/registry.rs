@@ -130,25 +130,14 @@ impl ControlTargetRegistry {
         Self::default()
     }
 
-    /// Register a trusted snapshot and return its opaque id.
-    pub(crate) fn register(&self, target: TrustedControlTarget) -> String {
-        let id = Self::target_id(target.pid, target.creation_ms);
-        let mut map = self.lock();
-        map.insert(
-            id.clone(),
-            Entry {
-                target: Arc::new(target),
-                issued: Instant::now(),
-            },
-        );
-        Self::evict(&mut map);
-        id
-    }
-
     /// Replace the registry with a fresh snapshot's targets (refresh cycle).
     /// Old ids stop resolving — stale entries cannot survive a refresh.
+    /// On a poisoned lock this is a deliberate no-op: no new targets are
+    /// issued from inconsistent state and every action fails closed.
     pub(crate) fn replace_all(&self, targets: impl IntoIterator<Item = TrustedControlTarget>) {
-        let mut map = self.lock();
+        let Ok(mut map) = self.try_lock() else {
+            return;
+        };
         map.clear();
         for target in targets {
             let id = Self::target_id(target.pid, target.creation_ms);
@@ -162,11 +151,24 @@ impl ControlTargetRegistry {
         }
     }
 
-/// Resolve an opaque id, reporting `Unknown` vs `Expired` distinctly.
-/// Expired entries are dropped on touch; both outcomes refuse at the API
-/// boundary — the distinction exists for diagnostics only.
-pub(crate) fn resolve(&self, target_id: &str) -> TargetResolution {
-        let mut map = self.lock();
+    /// Register a trusted snapshot and return its opaque id.
+    ///
+    /// Test-only infallible wrapper: production paths use `try_register`
+    /// (fail-closed on poison) via the discovery cycle. In tests the lock
+    /// cannot be poisoned, so `expect` is a proven invariant here.
+    #[cfg(test)]
+    pub(crate) fn register(&self, target: TrustedControlTarget) -> String {
+        self.try_register(target).expect("test registry lock is healthy")
+    }
+
+    /// Resolve an opaque id, reporting `Unknown` vs `Expired` distinctly.
+    /// Expired entries are dropped on touch; both outcomes refuse at the API
+    /// boundary — the distinction exists for diagnostics only. A poisoned
+    /// registry resolves to `Unknown` (fail closed — the action is refused).
+    pub(crate) fn resolve(&self, target_id: &str) -> TargetResolution {
+        let Ok(mut map) = self.try_lock() else {
+            return TargetResolution::Unknown;
+        };
         Self::evict(&mut map);
         match map.get(target_id) {
             Some(entry) => TargetResolution::Found(Arc::clone(&entry.target)),
@@ -177,7 +179,7 @@ pub(crate) fn resolve(&self, target_id: &str) -> TargetResolution {
     /// Number of live entries (test diagnostics only).
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.lock().len()
+        self.try_lock().map(|m| m.len()).unwrap_or(0)
     }
 
     /// Test-only: age one entry past the TTL so expiry is deterministic.
@@ -224,11 +226,33 @@ pub(crate) fn resolve(&self, target_id: &str) -> TargetResolution {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
-        match self.map.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+    /// Lock the registry. **Fail closed on poison** (Phase 10B, spec §B):
+    /// the control registry is the security boundary — a poisoned map means
+    /// unknown-internal-invariant state, so control actions are refused
+    /// (callers map the error to a structured refusal) rather than trusting
+    /// a possibly-inconsistent map. Never fall back to raw PIDs.
+    fn try_lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, HashMap<String, Entry>>, &'static str> {
+        self.map
+            .lock()
+            .map_err(|_| "control target registry lock poisoned — control refused")
+    }
+
+    /// Register a trusted snapshot; returns a structured refusal message if
+    /// the registry is poisoned (control stays unavailable until restart).
+    pub(crate) fn try_register(&self, target: TrustedControlTarget) -> Result<String, String> {
+        let id = Self::target_id(target.pid, target.creation_ms);
+        let mut map = self.try_lock()?;
+        map.insert(
+            id.clone(),
+            Entry {
+                target: Arc::new(target),
+                issued: Instant::now(),
+            },
+        );
+        Self::evict(&mut map);
+        Ok(id)
     }
 }
 
@@ -314,8 +338,43 @@ mod tests {
             let entry = map.get_mut(&id).expect("entry");
             entry.issued = Instant::now().checked_sub(TARGET_TTL + Duration::from_secs(1)).expect("sane clock");
         }
-        assert_eq!(registry.resolve(&id), TargetResolution::Unknown,
-            "an expired entry must refuse like an unknown one");
+        assert_eq!(
+            registry.resolve(&id),
+            TargetResolution::Unknown,
+            "an expired entry must refuse like an unknown one"
+        );
         assert_eq!(registry.len(), 0, "expiry must actually drop the entry");
+    }
+
+    // Phase 10B (spec §B): a poisoned registry must FAIL CLOSED — resolve
+    // returns Unknown (the action is refused), try_register/replace_all
+    // issue nothing, and no panic escapes. Control stays unavailable until
+    // restart; there is never a fallback to raw PIDs.
+    #[test]
+    fn poisoned_registry_fails_closed_without_panic() {
+        let registry = ControlTargetRegistry::new();
+        let id = registry.register(target(105));
+        // Poison the inner mutex the same way a panicking writer would.
+        let registry = std::sync::Arc::new(registry);
+        let mutex = std::sync::Arc::clone(&registry);
+        let _ = std::thread::Builder::new()
+            .name("poisoner".to_string())
+            .spawn(move || {
+                let _guard = mutex.map.lock();
+                panic!("simulated writer panic while holding the registry lock");
+            })
+            .map(|handle| handle.join());
+        // Resolve must refuse (Unknown), not panic and not serve stale trust.
+        assert_eq!(
+            registry.resolve(&id),
+            TargetResolution::Unknown,
+            "poisoned registry must fail closed"
+        );
+        // Registration must refuse instead of issuing targets.
+        assert!(registry.try_register(target(106)).is_err());
+        // Refresh must be a safe no-op, still no targets resolvable.
+        registry.replace_all([target(107)]);
+        assert_eq!(registry.resolve(&id), TargetResolution::Unknown);
+        assert_eq!(registry.len(), 0);
     }
 }

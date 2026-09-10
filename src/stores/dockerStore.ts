@@ -130,6 +130,10 @@ export const useDockerStore = create<DockerState>((set, get) => ({
     else set({ loading: true })
     try {
       const snapshot = await getDockerSnapshot()
+      if (snapshot === undefined || snapshot === null) {
+        set({ loading: false, error: 'Docker engine returned no data' })
+        return
+      }
       if (existing?.available) recordTransitions(existing.containers, snapshot.containers)
       set({
         snapshot,
@@ -147,6 +151,10 @@ export const useDockerStore = create<DockerState>((set, get) => ({
     try {
       const existing = get().snapshot
       const snapshot = await refreshDocker()
+      if (snapshot === undefined || snapshot === null) {
+        set({ refreshing: false, error: 'Docker engine returned no data' })
+        return
+      }
       if (existing?.available) recordTransitions(existing.containers, snapshot.containers)
       set({
         snapshot,

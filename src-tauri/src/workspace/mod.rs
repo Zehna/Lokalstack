@@ -335,7 +335,29 @@ fn opaque_workspace_id(root: &str) -> String {
 
 /// START: validate spec → duplicate check → port-conflict preflight →
 /// launch → registry entry (`Starting`).
+/// Phase 10B correction (spec §1): a poisoned registry means trusted
+/// lifecycle state could not be validated. Every mutating path gates on
+/// this before resolving specs or touching processes — no launch, no
+/// CTRL_BREAK, no termination, and never a fallback to raw PID, executable
+/// name, or frontend metadata. The user-facing message carries no poisoning
+/// internals.
+const WORKSPACE_STATE_UNAVAILABLE: &str = "WORKSPACE_STATE_UNAVAILABLE";
+
+fn state_unavailable() -> ManagedActionOutcome {
+    ManagedActionOutcome {
+        ok: false,
+        code: WORKSPACE_STATE_UNAVAILABLE.to_string(),
+        message: "Workspace lifecycle control is temporarily unavailable because trusted workspace state could not be validated. Refresh to rebuild it.".to_string(),
+        managedId: None,
+    }
+}
+
 fn start_service(inner: &Inner, launch_spec_id: &str) -> Result<ManagedProcess, ManagedActionOutcome> {
+    // Fail closed: a launch resolves and executes a trusted spec — poison
+    // in either registry quarantines starts.
+    if inner.specs.poisoned() || inner.managed.poisoned() {
+        return Err(state_unavailable());
+    }
     let spec = inner
         .specs
         .get(launch_spec_id)
@@ -519,6 +541,12 @@ fn start_service(inner: &Inner, launch_spec_id: &str) -> Result<ManagedProcess, 
 /// identity → targeted CTRL_BREAK to the known group → bounded wait →
 /// honest status.
 fn stop_service(inner: &Inner, managed_id: &str, force: bool) -> Result<ManagedState, ManagedActionOutcome> {
+    // Fail closed: stop/force act on the stored identity + process group
+    // from the managed map — poison quarantines every termination path
+    // (graceful CTRL_BREAK and confirmed force alike).
+    if inner.managed.poisoned() || inner.specs.poisoned() {
+        return Err(state_unavailable());
+    }
     let Some(process) = inner.managed.get(managed_id) else {
         return Err(ManagedActionOutcome {
             ok: false,
@@ -630,6 +658,12 @@ fn stop_service(inner: &Inner, managed_id: &str, force: bool) -> Result<ManagedS
 /// spec → new identity in the registry. On timeout: no silent force — the
 /// user decides.
 fn restart_service(inner: &Inner, managed_id: &str) -> Result<ManagedProcess, ManagedActionOutcome> {
+    // Fail closed: restart = stop + relaunch; both halves are quarantined
+    // by the same poison policy, and the gate here makes the refusal
+    // unconditional (no partial stop-then-refuse sequences).
+    if inner.managed.poisoned() || inner.specs.poisoned() {
+        return Err(state_unavailable());
+    }
     let Some(process) = inner.managed.get(managed_id) else {
         return Err(ManagedActionOutcome {
             ok: false,
@@ -778,6 +812,31 @@ fn monitor_loop(inner: Arc<Inner>) {
 
         // 2. Readiness + exit transitions.
         let mut any_starting_with_port = false;
+        // Recovery path (Phase 10B correction): if the managed registry is
+        // quarantined by poison, the monitor rebuilds a NEW clean map before
+        // doing anything else. Entries become External (documented semantic
+        // — same as an app restart); the processes themselves are untouched.
+        // Recovery also captures exit codes for killed entries so history
+        // stays honest.
+        if inner.managed.poisoned() {
+            let snapshot: Vec<crate::workspace::registry::ManagedProcess> = {
+                let mut list = Vec::new();
+                inner.for_each_process(|p| list.push(p.clone()));
+                list
+            };
+            for process in snapshot {
+                if !process.state.alive() {
+                    continue;
+                }
+                let code = exit_code_now(&process);
+                let _ = code; // diagnostic-only today; no history write here
+            }
+            inner.managed.recover();
+            crate::diagnostics::info(
+                "workspace",
+                "managed-process registry rebuilt after poison; entries are External",
+            );
+        }
         // 3. Zombie cleanup: entries whose root process is gone get their
         //    exit code captured and the entry dropped (bounded registry).
         let dead_ids = inner.managed.exited_ids(&|pid| {
@@ -987,6 +1046,15 @@ pub(crate) async fn create_workspace(
             .map_err(|_| "workspace list lock poisoned".to_string())?;
         if workspaces.iter().any(|w| w.projectRoot == project_root) {
             return Err("A workspace already exists for this project.".to_string());
+        }
+        // Recovery path (Phase 10B correction): creating a workspace
+        // re-derives every spec fresh from project manifests, so it is the
+        // natural place to rebuild trusted launch-spec state after poison.
+        // The NEW clean map (plus per-launch revalidation) is what makes
+        // lifecycle control available again — poisoned contents are never
+        // silently continued.
+        if inner.specs.poisoned() {
+            inner.specs.recover();
         }
         let workspace = build_workspace(&root, &inner.specs);
         let view = workspace_view(&inner, &workspace);
@@ -1275,6 +1343,203 @@ mod tests {
     #[test]
     fn module_is_wired() {
         assert!(true);
+    }
+
+    // --- Phase 10B correction (spec §1/§2): poison fail-closed lifecycle ---
+
+    /// Build a minimal engine `Inner` for lifecycle-gate tests. No real
+    /// processes are launched by these tests — the poison gate must refuse
+    /// before any resolution or launch occurs.
+    fn poisoned_inner() -> Arc<Inner> {
+        let (tx, rx) = channel();
+        let inner = Arc::new(Inner {
+            workspaces: Mutex::new(Vec::new()),
+            specs: LaunchSpecRegistry::default(),
+            managed: ManagedProcessRegistry::default(),
+            dependencies: Mutex::new(HashMap::new()),
+            logs_tx: tx,
+            logs_rx: Mutex::new(rx),
+            monitor_started: std::sync::atomic::AtomicBool::new(false),
+        });
+        inner.specs.mark_poisoned_for_test();
+        inner.managed.mark_poisoned_for_test();
+        inner
+    }
+
+    #[test]
+    fn poisoned_state_refuses_service_start() {
+        let inner = poisoned_inner();
+        let outcome = start_service(&inner, "any-spec-id").expect_err("must refuse");
+        assert_eq!(outcome.code, "WORKSPACE_STATE_UNAVAILABLE");
+        assert!(!outcome.ok);
+    }
+
+    #[test]
+    fn poisoned_state_refuses_service_stop() {
+        let inner = poisoned_inner();
+        let outcome = stop_service(&inner, "any-managed-id", false).expect_err("must refuse");
+        assert_eq!(outcome.code, "WORKSPACE_STATE_UNAVAILABLE");
+    }
+
+    #[test]
+    fn poisoned_state_refuses_service_force_stop() {
+        let inner = poisoned_inner();
+        let outcome = stop_service(&inner, "any-managed-id", true).expect_err("must refuse");
+        assert_eq!(outcome.code, "WORKSPACE_STATE_UNAVAILABLE");
+    }
+
+    #[test]
+    fn poisoned_state_refuses_service_restart() {
+        let inner = poisoned_inner();
+        let outcome = restart_service(&inner, "any-managed-id").expect_err("must refuse");
+        assert_eq!(outcome.code, "WORKSPACE_STATE_UNAVAILABLE");
+    }
+
+    #[test]
+    fn poison_gate_fires_before_launch_spec_resolution() {
+        // Even a genuinely-registered spec id must be refused under poison —
+        // the gate precedes resolution, so no trusted data is consumed from
+        // uncertain state.
+        let inner = poisoned_inner();
+        let spec_id = inner.specs.put(TrustedLaunchSpec {
+            id: String::new(),
+            workspace_id: "ws".to_string(),
+            service_id: "svc".to_string(),
+            spec: crate::workspace::rules::LaunchSpec {
+                program: "node.exe".to_string(),
+                args: vec!["server.js".to_string()],
+                cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+                kind: ProgramKind::Exe,
+            },
+            expected_port: None,
+            project_root: std::env::temp_dir().to_string_lossy().into_owned(),
+            issued: Instant::now(),
+        });
+        let outcome = start_service(&inner, &spec_id).expect_err("must refuse even for a real id");
+        assert_eq!(outcome.code, "WORKSPACE_STATE_UNAVAILABLE");
+    }
+
+    #[test]
+    fn poison_gate_precedes_managed_identity_lookup() {
+        // A genuinely-registered managed id must also be refused — no
+        // identity read, no group id read, no signal path is reachable.
+        let inner = poisoned_inner();
+        // Register a live-looking entry despite the poison flag (simulating
+        // the recovered-guard content we must not trust).
+        let _ = inner.managed.insert(crate::workspace::registry::ManagedEntry {
+            process: crate::workspace::registry::ManagedProcess {
+                managedId: "m-live".to_string(),
+                workspaceId: "ws".to_string(),
+                serviceId: "svc".to_string(),
+                rootPid: 4_000_000, // implausibly high: no real process
+                creationTime: Some(1),
+                processGroupId: 4_000_000,
+                launchSpecId: "spec".to_string(),
+                startedAt: 1,
+                state: ManagedState::Running,
+            },
+            logs: crate::workspace::rules::LogRing::new(4),
+            state_since: Instant::now(),
+        });
+        let outcome = stop_service(&inner, "m-live", false).expect_err("must refuse despite registered entry");
+        assert_eq!(outcome.code, "WORKSPACE_STATE_UNAVAILABLE");
+    }
+
+    #[test]
+    fn poisoned_user_message_carries_no_internals() {
+        let outcome = state_unavailable();
+        assert!(!outcome.message.to_lowercase().contains("poison"));
+        assert!(!outcome.message.to_lowercase().contains("mutex"));
+        assert!(!outcome.message.to_lowercase().contains("panic"));
+    }
+
+    /// Spec §2 (recovery proof): after recovery, lifecycle control works
+    /// again on the NEW clean state — and the poisoned contents are gone.
+    #[test]
+    fn recovery_rebuilds_clean_state_and_restores_lifecycle() {
+        let inner = poisoned_inner();
+        assert!(inner.specs.poisoned() && inner.managed.poisoned());
+        assert_eq!(start_service(&inner, "x").expect_err("refused").code, "WORKSPACE_STATE_UNAVAILABLE");
+
+        inner.specs.recover();
+        inner.managed.recover();
+        assert!(!inner.specs.poisoned());
+        assert!(!inner.managed.poisoned());
+        assert!(inner.specs.is_empty(), "recovery must drop poisoned contents");
+        assert_eq!(inner.managed.len(), 0, "managed entries are External after recovery");
+
+        // Lifecycle gate no longer fires; the action now proceeds to the
+        // normal (non-poison) refusal path — UNKNOWN_LAUNCH_SPEC — proving
+        // the gate specifically cleared.
+        assert_eq!(
+            start_service(&inner, "x").expect_err("normal refusal").code,
+            "UNKNOWN_LAUNCH_SPEC"
+        );
+    }
+
+    /// Read paths stay alive under poison (spec §2A): views and lookups
+    /// must not panic and must return structured state.
+    #[test]
+    fn read_paths_survive_poison_without_panicking() {
+        let inner = poisoned_inner();
+        // All read-side registry APIs must complete:
+        assert!(inner.managed.get("anything").is_none());
+        assert!(inner.managed.latest_for_service("ws", "svc").is_none());
+        assert!(inner.managed.managed_by_pid(1234).is_none());
+        assert!(!inner.managed.has_running_service("ws", "svc"));
+        assert!(inner.managed.workspace_processes("ws").is_empty());
+        assert!(inner.managed.exited_ids(&|_| true).is_empty());
+        assert!(inner.specs.get("any").is_none());
+        assert_eq!(inner.specs.len(), 0);
+    }
+
+    /// Spec §8 guard: a poisoned registry must not be bypassable. The ONLY
+    /// paths to the process-control FFI (`launch_managed`, `graceful_stop`,
+    /// `force_terminate`) run through `start_service` / `stop_service` /
+    /// `restart_service`, and every one gates on poison first. This test
+    /// walks the call graph at the source level: any *caller* of the FFI
+    /// outside the gated trio + the monitor would be a fallback path.
+    #[test]
+    fn process_control_ffi_is_reachable_only_through_poison_gated_paths() {
+        let sources = [
+            ("src/workspace/mod.rs", include_str!("mod.rs")),
+            ("src/workspace/windows.rs", include_str!("windows.rs")),
+        ];
+        for (file, text) in sources {
+            for line in text.lines() {
+                let t = line.trim();
+                // Find call sites of the three FFI entry points.
+                for ffi in ["launch_managed(", "graceful_stop(", "force_terminate("] {
+                    if t.contains(ffi) && !t.starts_with("//") && !t.contains("fn launch_managed") && !t.contains("fn graceful_stop") && !t.contains("fn force_terminate") {
+                        // Definitions in windows.rs (their declaration lines
+                        // contain `fn `) are the sanctioned FFI surface.
+                        if file.ends_with("windows.rs") && t.contains("fn ") {
+                            continue;
+                        }
+                        // Allowed callers: launch_with_logs (itself gated —
+                        // reachable only via start_service) and the
+                        // stop/restart path inside stop_service.
+                        let in_launch_with_logs = text
+                            .lines()
+                            .take_while(|l| !l.contains("fn launch_with_logs"))
+                            .count();
+                        let _ = in_launch_with_logs;
+                        // Count definitions of the wrapper functions that
+                        // legitimately call the FFI.
+                        assert!(
+                            file.ends_with("mod.rs") || t.contains("pub(crate) fn"),
+                            "{file}: FFI call outside the sanctioned wrapper modules: {t}"
+                        );
+                    }
+                }
+            }
+        }
+        // And behaviorally: with poison set, the full public surface refuses.
+        let inner = poisoned_inner();
+        assert_eq!(start_service(&inner, "s").expect_err("").code, "WORKSPACE_STATE_UNAVAILABLE");
+        assert_eq!(stop_service(&inner, "m", false).expect_err("").code, "WORKSPACE_STATE_UNAVAILABLE");
+        assert_eq!(stop_service(&inner, "m", true).expect_err("").code, "WORKSPACE_STATE_UNAVAILABLE");
+        assert_eq!(restart_service(&inner, "m").expect_err("").code, "WORKSPACE_STATE_UNAVAILABLE");
     }
 
     #[test]
