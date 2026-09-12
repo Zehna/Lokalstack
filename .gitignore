@@ -16,3 +16,11 @@ Thumbs.db
 
 # Coverage output
 coverage/
+
+# Release artifacts (binaries/installers stay out of git; the checksum
+# manifest is regenerated per build and the hashes live in RELEASE_CHECKLIST
+# / the release report)
+release-artifacts/
+*.exe
+*.msi
+msi_install.log

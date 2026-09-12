@@ -1,0 +1,86 @@
+name: Release build
+
+# Phase 10E (§J) — manually triggered release-candidate packaging.
+# Builds the Tauri NSIS/MSI installers on Windows and exposes them as CI
+# artifacts ONLY. No GitHub Release is created, no tag is required, nothing
+# is published publicly (§AR). Phase 10F decides the public release path.
+
+on:
+  workflow_dispatch:
+
+# Minimum permissions (§K): checkout only. No release write, no secrets.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  package:
+    name: Package Windows installers (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\cargo\registry
+            ~\AppData\Local\cargo\git
+            src-tauri\target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-release-${{ runner.os }}-
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Same gates as CI — a release build never skips quality.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Frontend tests
+        run: npm run test:run
+
+      - name: Rust tests (locked)
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      # The authoritative production build path (§C): Tauri's own flow,
+      # which runs `npm run build` (beforeBuildCommand) and compiles the
+      # Rust crate WITH the custom-protocol feature so the bundled assets
+      # are embedded (never the dev URL).
+      - name: Tauri build (NSIS + MSI)
+        run: npm run tauri build
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p release-artifacts
+          find src-tauri/target/release/bundle -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} release-artifacts/ \;
+          cp src-tauri/target/release/localstack-control-center.exe release-artifacts/localstack-control-center-standalone.exe
+          sha256sum release-artifacts/* > release-artifacts/SHA256SUMS.txt
+          ls -la release-artifacts
+
+      # Artifacts only (§J): downloadable from the workflow run for 14 days.
+      # This does NOT create a GitHub Release and nothing becomes public.
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: localstack-control-center-1.0.0-rc
+          path: release-artifacts/
+          retention-days: 14
+          if-no-files-found: error

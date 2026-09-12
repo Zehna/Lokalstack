@@ -227,6 +227,10 @@ export function SettingsPage() {
         <p className="mt-1 text-sm text-slate-500">
           Operational preferences only — changes apply immediately and persist locally.
         </p>
+        <p className="mt-0.5 text-xs text-slate-600">
+          Version {import.meta.env.VITE_APP_VERSION} — derived from app metadata, never
+          hardcoded.
+        </p>
       </div>
 
       {/* Save/correction/error notices (spec §AC) — distinct, human-safe. */}
