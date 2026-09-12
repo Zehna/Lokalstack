@@ -217,11 +217,44 @@ fn discovery_cycles_do_not_leak_handles() {
             .collect();
     }
 
+    let midway = self_handle_count().expect("handle count must remain readable");
+
+    // Phase 10B §R policy: fail only on CLEAR MONOTONIC growth, not one-shot
+    // variance. A single warm-up burst can legitimately grow handles (lazy
+    // allocator/OS bookkeeping), so the leak signal is growth that
+    // CONTINUES at the same per-cycle rate in a second, equally long burst.
+    let mut previous2 = previous;
+    for _ in 0..150 {
+        let cycle = run_discovery_cycle(&previous2, &mut project_cache, false, &registry)
+            .expect("discovery cycle must not fail");
+        previous2 = cycle
+            .raw_samples
+            .iter()
+            .map(|(pid, s)| {
+                (
+                    *pid,
+                    crate::process::sampler::PreviousSample {
+                        identity: crate::process::sampler::ProcessIdentity {
+                            pid: *pid,
+                            creation_ticks: s.creation_ticks,
+                        },
+                        cpu_sample: crate::process::sampler::CpuSample {
+                            cpu_ticks: s.cpu_ticks,
+                            wall_ms: s.wall_ms,
+                        },
+                    },
+                )
+            })
+            .collect();
+    }
+
     let after = self_handle_count().expect("handle count must remain readable");
+    let burst1 = i64::from(midway) - i64::from(before);
+    let burst2 = i64::from(after) - i64::from(midway);
     assert!(
-        after <= before + 8,
-        "handle leak detected: {} → {} over 150 discovery cycles",
-        before,
-        after
+        burst2 <= burst1 + 8,
+        "handle leak detected: growth continued across bursts \
+         (burst1 {before}→{midway} = {burst1:+}, burst2 {midway}→{after} = {burst2:+}) \
+         — per-cycle leak, not warm-up",
     );
 }

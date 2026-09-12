@@ -11,6 +11,7 @@ import { invoke } from '@tauri-apps/api/core'
 
 import type {
   AiRuntimeSnapshot,
+  AppSettings,
   ContainerDetails,
   DependencyTarget,
   DockerEngineSnapshot,
@@ -20,6 +21,7 @@ import type {
   PortCandidate,
   PortConflictReport,
   PortListenersResponse,
+  SaveSettingsResult,
   StopResult,
   TargetOption,
   WorkspaceReadinessView,
@@ -214,4 +216,47 @@ export async function refreshDocker(): Promise<DockerEngineSnapshot> {
 /** Per-container details by trusted container ID from the backend snapshot. */
 export async function getContainerDetails(containerId: string): Promise<ContainerDetails> {
   return invoke<ContainerDetails>('get_container_details', { containerId })
+}
+
+/* ------------------------------------------------------------------------
+ * Phase 10C — application settings (narrow, backend-validated commands)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Current settings + actual startup-registration state. The frontend
+ * supplies nothing — defaults, validation, and clamping are server-side.
+ */
+export async function getAppSettings(): Promise<AppSettings> {
+  return invoke<AppSettings>('get_app_settings')
+}
+
+/**
+ * Persist a settings patch. The backend validates/clamps every field and
+ * returns the effective settings plus a note when it corrected a value.
+ * Saving never touches startup registration (dedicated command).
+ */
+export async function saveAppSettings(patch: {
+  autoRefresh: boolean
+  portRefreshIntervalMs: number
+  aiPollingEnabled: boolean
+  dockerPollingEnabled: boolean
+  launchMinimized: boolean
+  closeBehavior: AppSettings['closeBehavior']
+  theme: AppSettings['theme']
+}): Promise<SaveSettingsResult> {
+  return invoke<SaveSettingsResult>('save_app_settings', { patch })
+}
+
+/** Reset settings to defaults (backend restores + persists). */
+export async function resetAppSettings(): Promise<AppSettings> {
+  return invoke<AppSettings>('reset_app_settings')
+}
+
+/**
+ * Enable/disable run-at-Windows-startup (explicit user opt-in). Returns
+ * the resulting settings view whose `startupRegistered` reflects the OS
+ * state after the toggle — the UI never lies about registration.
+ */
+export async function setRunAtStartup(enabled: boolean): Promise<AppSettings> {
+  return invoke<AppSettings>('set_run_at_startup', { enabled })
 }

@@ -854,6 +854,36 @@ Notes:
   tick deltas, memory sizes) use checked/saturating arithmetic; malformed
   or nonsensical local values degrade to `None`/0 rather than panicking.
 
+## Application shell (Phase 10C)
+
+Settings, tray, single instance, and close behavior complete the desktop
+shell without touching the service-control security model:
+
+- **Settings** (`src-tauri/src/settings.rs`) — one normalized model with
+  server-side defaults, validation, and clamping. Persisted atomically
+  (temp file + rename) to `%LOCALAPPDATA%\localstack-control-center\settings.json`
+  — outside the source tree. Missing/empty/corrupt/wrong-typed files and
+  unknown future fields recover to validated defaults with a diagnostics
+  entry; startup never crashes on bad settings.
+- **Polling integration** — `autoRefresh`, the port interval, and the
+  AI/Docker toggles flow from the settings store through the Phase 10A
+  polling-owner `configure()`: disabling keeps consumer leases, an interval
+  change recreates exactly one timer, and manual refresh is always available.
+- **Tray** — Open (show/restore/focus the single window), Refresh
+  (read-only discovery refresh; never starts/stops/kills anything), Exit
+  (exits LocalStack only; managed/external services keep running).
+- **Close behavior** — `exit` (default) or `minimize_to_tray`; the window
+  lifecycle never implies a service lifecycle. Launch-minimized hides the
+  main window at startup but falls back to showing it if tray
+  initialization fails — the app is never left inaccessible.
+- **Windows startup** — opt-in HKCU `Run` registration via the autostart
+  plugin (no elevation, reversible, `--startup` argument honored). The
+  settings view reports the OS registration state, and stale registrations
+  are reconciled/removed at startup rather than lied about.
+- **Single instance** — a second launch signals the first (window shown and
+  focused) and exits; it never re-adopts managed processes, restarts
+  polling stacks, or creates a second tray.
+
 ## See also
 
 - `docs/roadmap.md` for the phase plan.

@@ -511,9 +511,11 @@ inherited (no .env integration yet).
 
 **Goal:** make it a product.
 
-- Frontend regression tests (Vitest), CI, crash recovery, installer
-  (NSIS/MSI), startup behavior, settings, tray, performance profiling,
-  accessibility, update strategy, and user documentation.
+- ✅ 10A — Frontend regression test foundation (polling ownership, audit trail).
+- ✅ 10B — Crash & runtime resilience (panic audit, fail-closed registries,
+  failure isolation, bounds, static safety guards, diagnostics logger).
+- ✅ 10C — Settings, tray, Windows startup, close behavior, single instance.
+- ⬜ 10D — CI, packaging (NSIS/MSI), update strategy, user documentation.
 
 ---
 

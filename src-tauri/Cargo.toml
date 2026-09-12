@@ -15,10 +15,22 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# Mirrors the standard Tauri scaffold: release/desktop builds embed the
+# `frontendDist` assets; without it `generate_context!` falls back to the
+# dev-server URL (`devUrl`). Plain `cargo build --release` must pass
+# `--features custom-protocol` (the Tauri CLI does this automatically).
+custom-protocol = ["tauri/custom-protocol"]
+
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Single instance (Phase 10C): second launches signal the first instance
+# (show + focus) and exit — never a duplicate polling stack or tray icon.
+tauri-plugin-single-instance = "2"
+# Windows startup (Phase 10C): HKCU run-key registration, opt-in, no admin.
+tauri-plugin-autostart = "2"
 # Control-target registry (Phase 5 hardened): audited BLAKE3 for opaque,
 # unpredictable target ids.
 blake3 = "1"

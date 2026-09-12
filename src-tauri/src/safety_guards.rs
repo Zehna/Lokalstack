@@ -230,3 +230,59 @@ fn managed_graceful_stop_never_targets_group_zero() {
         }
     }
 }
+
+// Phase 10C correction (spec §14): window/app lifecycle must remain
+// independent from development-service lifecycle. The app-shell modules
+// (tray, close behavior, settings, single-instance) may never invoke any
+// service-control operation — closing, hiding, exiting, or configuring the
+// app never stops a workspace, a managed service, an external process, a
+// container, or an AI runtime.
+#[test]
+fn app_lifecycle_modules_never_call_service_lifecycle() {
+    const APP_LIFECYCLE_FILES: &[&str] = &["src/lib.rs", "src/settings.rs", "src/app_commands.rs"];
+    const FORBIDDEN_OPERATIONS: &[&str] = &[
+        // Workspace/managed lifecycle.
+        "start_workspace_services",
+        "stop_workspace_services",
+        "start_managed_service",
+        "stop_managed_service",
+        "restart_managed_service",
+        // External process control.
+        "end_process",
+        "terminate_process",
+        "TerminateProcess",
+        "GenerateConsoleCtrlEvent",
+        // Docker lifecycle.
+        "docker_stop",
+        "docker_kill",
+        "stop_container",
+        "remove_container",
+        // AI lifecycle.
+        "unload_model",
+        "delete_model",
+    ];
+    let sources = production_sources();
+    for (path, text) in &sources {
+        let file = path.to_string_lossy().replace('\\', "/");
+        if !APP_LIFECYCLE_FILES.iter().any(|f| file.ends_with(f)) {
+            continue;
+        }
+        // `generate_handler![workspace::start_managed_service, …]` is a
+        // command REGISTRATION (exposing the operation to the frontend),
+        // not a lifecycle call. Drop macro registration lines before
+        // scanning so the guard catches actual invocations only.
+        let stripped = strip_comments(text);
+        let body: String = stripped
+            .lines()
+            .filter(|line| !line.contains("generate_handler") && !line.trim_start().starts_with("workspace::") && !line.trim_start().starts_with("process::") && !line.trim_start().starts_with("conflicts::") && !line.trim_start().starts_with("dependencies::") && !line.trim_start().starts_with("docker::") && !line.trim_start().starts_with("ai::") && !line.trim_start().starts_with("app_commands::"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for op in FORBIDDEN_OPERATIONS {
+            assert!(
+                !body.contains(op),
+                "{} references service-lifecycle operation `{op}` — app window/tray/settings lifecycle must never control services",
+                path.display()
+            );
+        }
+    }
+}

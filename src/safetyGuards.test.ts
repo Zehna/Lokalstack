@@ -82,6 +82,37 @@ function stripCommentsAndStrings(source: string): string {
   return out
 }
 
+describe('settings security guard (Phase 10C §AI)', () => {
+  it('settings DTO never gains secret-shaped fields', () => {
+    const code = readFileSync(join(__dirname, 'types/domain.ts'), 'utf-8')
+    // Isolate the AppSettings interface so other domain types are unaffected.
+    const match = code.match(/interface AppSettings \{[\s\S]*?\n\}/)
+    expect(match, 'AppSettings interface must exist in src/types/domain.ts').not.toBeNull()
+    const body = match![0]
+    for (const banned of [
+      'apiKey', 'token', 'password', 'cookie', 'secret', 'credential',
+      'dockerEnv', 'authorization',
+    ]) {
+      expect(
+        body.toLowerCase().includes(banned.toLowerCase()),
+        `AppSettings must not contain secret-shaped field "${banned}"`,
+      ).toBe(false)
+    }
+  })
+
+  it('settings commands stay within the narrow Phase 10C surface', () => {
+    const code = readFileSync(join(__dirname, 'services/native/ports.ts'), 'utf-8')
+    const settingsSection = code.slice(code.indexOf('Phase 10C'))
+    for (const allowed of [
+      'get_app_settings', 'save_app_settings', 'reset_app_settings', 'set_run_at_startup',
+    ]) {
+      expect(settingsSection).toContain(allowed)
+    }
+    // No generic write/escape hatch in the settings block.
+    expect(settingsSection).not.toMatch(/writeTextFile|writeBinaryFile|readDir|remove\(/)
+  })
+})
+
 describe('frontend static safety guards (Phase 10B §AC)', () => {
   const srcRoot = join(__dirname)
   const files = listFiles(srcRoot)

@@ -785,3 +785,44 @@ export interface ContainerDetails {
   projectEvidence?: string
   projectConfidence?: string
 }
+
+/* ------------------------------------------------------------------------
+ * Application settings (Phase 10C) — operational preferences ONLY.
+ * Mirrors the Rust `SettingsView` DTO. No secret-shaped field can exist;
+ * this contract is pinned by tests on both sides of the boundary.
+ * ---------------------------------------------------------------------- */
+
+/** What closing the main window does (spec §P). */
+export type CloseBehavior = 'exit' | 'minimize_to_tray'
+
+/** Theme preference (spec §AD). Visual no-op until theming lands. */
+export type ThemePreference = 'system' | 'light' | 'dark'
+
+/** Persisted application settings as reported by the backend. */
+export interface AppSettings {
+  /** Base frontend auto-polling (ports/listeners). */
+  autoRefresh: boolean
+  /** Base poll cadence in ms; backend clamps to [1000, 60000]. */
+  portRefreshIntervalMs: number
+  /** AI runtime auto-polling (manual refresh always works). */
+  aiPollingEnabled: boolean
+  /** Docker auto-polling (manual refresh always works). */
+  dockerPollingEnabled: boolean
+  /** Launch with the main window hidden (tray is the recovery path). */
+  launchMinimized: boolean
+  /** Window close behavior (absorbs minimize-to-tray, spec §P). */
+  closeBehavior: CloseBehavior
+  /** Persisted run-at-startup intent. */
+  runAtStartup: boolean
+  /** Startup registration as the OS reports it RIGHT NOW (spec §AH). */
+  startupRegistered: boolean
+  /** Theme preference. */
+  theme: ThemePreference
+}
+
+/** Result of saving: the effective settings + a correction note if the
+ * backend had to clamp a value ("Invalid value corrected", spec §AC). */
+export interface SaveSettingsResult {
+  settings: AppSettings
+  correctedNote: string | null
+}

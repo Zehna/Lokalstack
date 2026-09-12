@@ -105,6 +105,14 @@ export function resetConflictsPolling(): void {
   conflictsPollOwner.releaseAll()
 }
 
+// Phase 10C (spec §I): readiness polling follows the base Auto Refresh
+// setting (it is the workspace/readiness intelligence layer).
+import { registerPollingApplier } from '@/stores/settingsStore'
+
+registerPollingApplier((settings) => {
+  conflictsPollOwner.configure({ enabled: settings.autoRefresh })
+})
+
 /**
  * Transition state — module-level because the store instance can be reset in
  * tests while the transition machine must stay consistent across `refresh()`

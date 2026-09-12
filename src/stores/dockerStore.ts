@@ -2,6 +2,8 @@ import { create } from 'zustand'
 
 import { getDockerSnapshot, refreshDocker } from '@/services/native/ports'
 import { recordAuditEntry } from '@/stores/auditTrail'
+import { createPollingOwner } from '@/stores/pollingOwner'
+import { registerPollingApplier } from '@/stores/settingsStore'
 import type { ContainerProjectLink, DockerContainer, DockerEngineSnapshot } from '@/types/domain'
 
 /** Engine/list polling cadence (spec §65) — backend caches at 5 s too. */
@@ -19,7 +21,56 @@ interface DockerState {
   refresh: () => Promise<void>
 }
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
+/* -------------------------------------------------------------------------
+ * Polling lifecycle — named-subscription, single shared timer (Phase 10A
+ * ownership architecture, migrated in the Phase 10C correction so settings
+ * can stop AND resume polling live). The Docker page is the single
+ * consumer ('docker-page'); duplicate start is idempotent and stop cannot
+ * underflow — identical semantics to the previous raw interval, plus live
+ * settings reconfiguration (spec §I): disable stops the timer, re-enable
+ * recreates exactly one timer for the still-mounted consumer, no remount.
+ * ---------------------------------------------------------------------- */
+
+const dockerPollOwner = createPollingOwner(
+  DOCKER_POLL_MS,
+  () => {
+    void useDockerStore.getState().load()
+  },
+  () => {
+    void useDockerStore.getState().load()
+  },
+)
+
+/** Start Docker polling for the mounted page (idempotent). */
+export function startDockerPolling(): void {
+  dockerPollOwner.acquire('docker-page')
+}
+
+/** Stop the mounted page's polling (idempotent, cannot underflow). */
+export function stopDockerPolling(): void {
+  dockerPollOwner.release('docker-page')
+}
+
+/** Test observability: whether the shared interval exists. */
+export function dockerPollingRunning(): boolean {
+  return dockerPollOwner.isRunning()
+}
+
+/** Test-only teardown: release every consumer and restore default config. */
+export function resetDockerPolling(): void {
+  dockerPollOwner.releaseAll()
+  // releaseAll clears leases but not settings state; restore the pristine
+  // default (enabled) so the next test/module consumer starts unconfigured.
+  dockerPollOwner.configure({ enabled: true })
+}
+
+// Phase 10C (spec §I): Docker auto-polling follows the settings toggle —
+// BOTH directions. Disable stops the timer; re-enable resumes immediately
+// for the still-mounted consumer (no navigation/remount required). Manual
+// refresh always works — it calls the store action directly.
+registerPollingApplier((settings) => {
+  dockerPollOwner.configure({ enabled: settings.dockerPollingEnabled })
+})
 
 /** Record a transition event in the shared session audit trail. */
 function record(
@@ -111,12 +162,6 @@ function failureLabel(snapshot: DockerEngineSnapshot): string {
   }
 }
 
-async function poll(): Promise<void> {
-  const state = useDockerStore.getState()
-  if (state.loading || state.refreshing) return
-  state.load()
-}
-
 export const useDockerStore = create<DockerState>((set, get) => ({
   snapshot: null,
   loading: false,
@@ -168,19 +213,7 @@ export const useDockerStore = create<DockerState>((set, get) => ({
   },
 }))
 
-/** Start polling while a Docker surface is mounted (idempotent). */
-export function startDockerPolling(): void {
-  if (pollTimer) return
-  void useDockerStore.getState().load()
-  pollTimer = setInterval(() => void poll(), DOCKER_POLL_MS)
-}
 
-export function stopDockerPolling(): void {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
 
 /** Convenience selector: project link per container id. */
 export function linksByContainer(

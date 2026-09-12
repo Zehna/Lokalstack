@@ -124,11 +124,40 @@ pub(crate) fn redact(message: &str) -> String {
     out
 }
 
-/// Resolve (once) the log file under `FOLDERID_LocalAppData`. Failure to
-/// resolve or open is silently absorbed: diagnostics must never become the
-/// reason the app fails.
+/// Resolve (once) the log file inside the shared app-data directory.
+/// Failure to resolve or open is silently absorbed: diagnostics must never
+/// become the reason the app fails.
 fn log_file() -> &'static Option<Mutex<File>> {
     LOG_FILE.get_or_init(|| {
+        local_app_data_dir().and_then(|dir| {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("localstack.log"))
+                .ok()
+                .map(Mutex::new)
+        })
+    })
+}
+
+/// Log a startup/subsystem event (`info` level).
+pub(crate) fn info(subsystem: &str, message: &str) {
+    write_log("info", subsystem, message);
+}
+
+/// Log a recoverable/degraded condition (`warn` level) — e.g. settings
+/// corruption recovery, startup-registration failure.
+pub(crate) fn warn(subsystem: &str, message: &str) {
+    write_log("warn", subsystem, message);
+}
+
+/// Resolve (once) the LocalStack app-data directory under
+/// `FOLDERID_LocalAppData`, creating it on demand. Shared by diagnostics
+/// (log file) and settings (settings.json) so both live in the same
+/// LocalStack-owned location — never inside a source tree (spec §E).
+pub(crate) fn local_app_data_dir() -> Option<PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
         #[cfg(windows)]
         {
             use windows_sys::Win32::UI::Shell::{
@@ -145,7 +174,6 @@ fn log_file() -> &'static Option<Mutex<File>> {
                 if hr != 0 || raw.is_null() {
                     return None;
                 }
-                // RAII box over the PWSTR.
                 let len = {
                     let mut l = 0usize;
                     while *raw.add(l) != 0 {
@@ -156,17 +184,11 @@ fn log_file() -> &'static Option<Mutex<File>> {
                 let slice = std::slice::from_raw_parts(raw, len);
                 let path = String::from_utf16_lossy(slice);
                 windows_sys::Win32::System::Com::CoTaskMemFree(raw.cast());
-
                 let dir = PathBuf::from(path).join("localstack-control-center");
                 if std::fs::create_dir_all(&dir).is_err() {
                     return None;
                 }
-                let file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(dir.join("localstack.log"))
-                    .ok()?;
-                Some(Mutex::new(file))
+                Some(dir)
             }
         }
         #[cfg(not(windows))]
@@ -174,11 +196,7 @@ fn log_file() -> &'static Option<Mutex<File>> {
             None
         }
     })
-}
-
-/// Log a startup/subsystem event (`info` level).
-pub(crate) fn info(subsystem: &str, message: &str) {
-    write_log("info", subsystem, message);
+    .clone()
 }
 
 /// Log a typed subsystem failure (`error` level).

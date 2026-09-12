@@ -21,6 +21,16 @@
 /** Idempotent cleanup closure returned by `acquire`. */
 export type PollingRelease = () => void
 
+/** Runtime configuration applied via `configure` (Phase 10C settings). */
+export interface PollingConfig {
+  /** When false the shared timer stops but consumer leases are KEPT —
+   * re-enabling restores the cycle for the same consumers (settings §I). */
+  enabled?: boolean
+  /** New cadence; if the timer is running it is recreated exactly once
+   * (one old timer removed, one new created — settings §K). */
+  intervalMs?: number
+}
+
 export interface PollingOwner {
   /**
    * Acquire a named subscription and (if this is the first consumer) start
@@ -28,6 +38,19 @@ export interface PollingOwner {
    * idempotent. Returns the structurally-paired release closure.
    */
   acquire: (consumerId: string) => PollingRelease
+  /**
+   * Release one consumer by id (Phase 10C correction: symmetric with
+   * `acquire` for fixed single-consumer domains like the Docker page).
+   * Releasing an absent id is a no-op — never an underflow.
+   */
+  release: (consumerId: string) => void
+  /**
+   * Apply runtime configuration (Phase 10C settings). Safe to call with no
+   * consumers; never creates a second timer.
+   */
+  configure: (config: PollingConfig) => void
+  /** Current configured cadence (for tests). */
+  intervalMs: () => number
   /** Number of *distinct* active consumers. */
   consumerCount: () => number
   /** Whether one specific consumer currently holds a subscription. */
@@ -40,18 +63,20 @@ export interface PollingOwner {
 
 /** Create a polling owner with one interval and named consumer leases. */
 export function createPollingOwner(
-  intervalMs: number,
+  initialIntervalMs: number,
   onTick: () => void,
   /** Optional one-shot when the timer is created (e.g. immediate refresh). */
   onStart?: () => void,
 ): PollingOwner {
+  let currentIntervalMs = initialIntervalMs
+  let enabled = true
   let timer: ReturnType<typeof setInterval> | null = null
   const consumers = new Set<string>()
 
   function startIfNeeded(): void {
-    if (timer !== null) return
+    if (timer !== null || !enabled) return
     onStart?.()
-    timer = setInterval(onTick, intervalMs)
+    timer = setInterval(onTick, currentIntervalMs)
   }
 
   function stopIfNeeded(): void {
@@ -73,6 +98,38 @@ export function createPollingOwner(
         stopIfNeeded()
       }
     },
+    release(consumerId: string): void {
+      // Same deletion semantics as the acquire-paired closure.
+      consumers.delete(consumerId)
+      stopIfNeeded()
+    },
+    configure(config: PollingConfig): void {
+      const intervalChanged = config.intervalMs !== undefined && config.intervalMs !== currentIntervalMs
+      if (config.intervalMs !== undefined && config.intervalMs > 0) {
+        currentIntervalMs = config.intervalMs
+      }
+      if (config.enabled !== undefined) {
+        enabled = config.enabled
+      }
+      if (!enabled) {
+        // Stop the shared timer but KEEP consumer leases: re-enabling
+        // restores polling for the same consumers without re-subscription.
+        if (timer !== null) {
+          clearInterval(timer)
+          timer = null
+        }
+        return
+      }
+      if (intervalChanged && timer !== null) {
+        // Exactly one old timer removed, one new created (settings §K).
+        clearInterval(timer)
+        timer = null
+      }
+      if (timer === null && consumers.size > 0) {
+        startIfNeeded()
+      }
+    },
+    intervalMs: () => currentIntervalMs,
     consumerCount: () => consumers.size,
     hasConsumer: (consumerId: string) => consumers.has(consumerId),
     isRunning: () => timer !== null,

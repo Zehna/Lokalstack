@@ -3,6 +3,7 @@ import { create } from 'zustand'
 import { getAiRuntimes } from '@/services/native/ports'
 import { recordAuditEntry } from '@/stores/auditTrail'
 import { createPollingOwner } from '@/stores/pollingOwner'
+import { registerPollingApplier } from '@/stores/settingsStore'
 import type { AiRuntimeSnapshot } from '@/types/domain'
 
 /** How often the AI runtime view refreshes while the page is active. */
@@ -67,6 +68,12 @@ export function aiRuntimePollingRunning(): boolean {
 export function resetAiRuntimePolling(): void {
   aiRuntimePollOwner.releaseAll()
 }
+
+// Phase 10C (spec §I): AI auto-polling follows the settings toggle. Manual
+// refresh always works — it calls the store action directly.
+registerPollingApplier((settings) => {
+  aiRuntimePollOwner.configure({ enabled: settings.aiPollingEnabled })
+})
 
 /** Record a transition event in the shared session audit trail. */
 function record(
