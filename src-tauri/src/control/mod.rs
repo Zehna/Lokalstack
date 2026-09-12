@@ -112,7 +112,10 @@ pub(crate) struct ControlCapability {
 #[allow(non_snake_case)]
 pub(crate) struct PidControl {
     pub pid: u32,
-    #[serde(flatten)]
+    /// Nested on the wire — the frontend contract (`PidControl["capability"]`
+    /// in src/types/domain.ts) reads `control.capability.canStop` et al.
+    /// Flattening here silently leaves `capability` undefined in the WebView
+    /// and crashes the Ports/Services views (Phase 10F release audit).
     pub capability: ControlCapability,
     /// Browser-friendly URLs (localhost forms only), deduplicated.
     pub urls: Vec<String>,
@@ -394,6 +397,41 @@ mod tests {
     }
 
     // --- capability model ----------------------------------------------------
+
+    /// Wire-contract regression guard (Phase 10F release audit): the
+    /// serialized `PidControl` must nest policy fields under
+    /// `"capability"` — the shape `src/types/domain.ts` declares and
+    /// `ControlActions` reads (`control.capability.canStop`). A `flatten`
+    /// here compiles fine, passes every fixture-based frontend test, and
+    /// still crashes the Ports/Services views on real data, so only a
+    /// serialization-shape test can pin it.
+    #[test]
+    fn pid_control_serializes_capability_nested_for_frontend() {
+        let registry = ControlTargetRegistry::new();
+        let control = control_for_process(
+            &process(1, "node.exe", Some(r"C:\Program Files\nodejs\node.exe")),
+            Some(&service("Vite", ServiceCategory::Frontend)),
+            Some(&project(r"D:\Projects\localstack")),
+            &[listener(1420, 1, "127.0.0.1")],
+            &registry,
+        );
+        let json: serde_json::Value =
+            serde_json::to_value(&control).expect("PidControl must serialize");
+        let capability = json
+            .get("capability")
+            .expect("capability must be a nested object — the frontend contract reads control.capability.canStop");
+        assert!(capability.get("canStop").is_some(), "capability.canStop missing");
+        assert!(capability.get("canOpen").is_some(), "capability.canOpen missing");
+        assert!(capability.get("gracefulStopSupported").is_some());
+        assert!(capability.get("gracefulStopReason").is_some());
+        assert!(capability.get("canRestart").is_some());
+        assert!(capability.get("reason").is_some());
+        // No flat leakage of capability fields at the top level.
+        assert!(json.get("canStop").is_none(), "capability fields must not be flattened");
+        assert!(json.get("pid").is_some());
+        assert!(json.get("urls").is_some());
+        assert!(json.get("target").is_some());
+    }
 
     #[test]
     fn vite_process_is_controllable_but_not_gracefully_stoppable() {

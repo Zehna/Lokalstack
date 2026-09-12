@@ -6,6 +6,9 @@
  * full dataset is present and render completes inside a generous, stable
  * budget. Budgets are broad regression ceilings (seconds), not benchmarks —
  * they fail only on pathological costs (e.g. accidental O(n²) per-row work).
+ * Ceilings must absorb scheduler noise from parallel vitest workers and v8
+ * coverage instrumentation (Phase 10F: healthy renders measure 0.7–3 s there,
+ * so a 5 s ceiling flapped against vitest's own 5 s default testTimeout).
  *
  * Fixture sizes follow spec §F: 300 ports, 150 service groups, 100 projects,
  * 50 workspaces, 500 AI models, 100 Docker containers, 100 history events.
@@ -36,9 +39,12 @@ import { useControlStore } from '@/stores/controlStore'
 import type { PortListener, ProcessInfo, ProjectIdentity } from '@/types/domain'
 
 /** Broad regression ceiling for one full page render (ms). */
-const RENDER_CEILING_MS = 5_000
+const RENDER_CEILING_MS = 15_000
 /** Broad ceiling for a pure derivation over 300 rows (ms). */
-const DERIVE_CEILING_MS = 1_000
+const DERIVE_CEILING_MS = 5_000
+/** Harness timeout well above the ceilings so the ceiling assertion, not
+ *  vitest's default 5 s testTimeout, decides the outcome under load. */
+const RENDER_TEST_TIMEOUT_MS = 30_000
 
 function timedRender(ui: React.ReactElement): number {
   const started = performance.now()
@@ -142,7 +148,7 @@ describe('Phase 10D large-fixture renders (spec §F)', () => {
     expect(await screen.findByText('5022')).toBeInTheDocument() // a mid-table port
     expect(screen.getByText(/of 300/)).toBeInTheDocument()
     expectUnderBudget(ms, RENDER_CEILING_MS, 'PortsPage @300 rows')
-  })
+  }, RENDER_TEST_TIMEOUT_MS)
 
   it('derives 150 service groups from 300 listener rows inside the ceiling', () => {
     const listeners: PortListener[] = []
@@ -193,7 +199,7 @@ describe('Phase 10D large-fixture renders (spec §F)', () => {
     // there are ≥100 cards (an “Unknown Project” card may also exist).
     expect(screen.getAllByText(/proj-\d+/).length).toBeGreaterThanOrEqual(100)
     expect(screen.getAllByText('Detection details').length).toBeGreaterThanOrEqual(100)
-  })
+  }, RENDER_TEST_TIMEOUT_MS)
 
   it('renders 50 workspaces inside the ceiling', async () => {
     const workspaces = Array.from({ length: 50 }, (_, i) =>
@@ -208,7 +214,7 @@ describe('Phase 10D large-fixture renders (spec §F)', () => {
     const ms = timedRender(<WorkspacesPage />)
     expectUnderBudget(ms, RENDER_CEILING_MS, 'WorkspacesPage @50')
     expect(screen.getAllByText(/workspace-/).length).toBeGreaterThanOrEqual(50)
-  })
+  }, RENDER_TEST_TIMEOUT_MS)
 
   it('renders 500 AI models inside the ceiling', () => {
     const runtime = makeAiRuntime({
@@ -218,7 +224,7 @@ describe('Phase 10D large-fixture renders (spec §F)', () => {
     const ms = timedRender(<AiServicesPage />)
     expectUnderBudget(ms, RENDER_CEILING_MS, 'AiServicesPage @500 models')
     expect(screen.getAllByText(/model-/).length).toBeGreaterThanOrEqual(500)
-  })
+  }, RENDER_TEST_TIMEOUT_MS)
 
   it('renders 100 Docker containers inside the ceiling', () => {
     const containers = Array.from({ length: 100 }, (_, i) =>
@@ -233,7 +239,7 @@ describe('Phase 10D large-fixture renders (spec §F)', () => {
     const ms = timedRender(<DockerPage />)
     expectUnderBudget(ms, RENDER_CEILING_MS, 'DockerPage @100 containers')
     expect(screen.getAllByText(/container-/).length).toBeGreaterThanOrEqual(100)
-  })
+  }, RENDER_TEST_TIMEOUT_MS)
 
   it('renders 100 history events inside the ceiling', () => {
     const history = Array.from({ length: 100 }, (_, i) => ({
@@ -249,7 +255,7 @@ describe('Phase 10D large-fixture renders (spec §F)', () => {
     const ms = timedRender(<HistoryPage />)
     expectUnderBudget(ms, RENDER_CEILING_MS, 'HistoryPage @100')
     expect(screen.getAllByText(/Action \d/).length).toBeGreaterThanOrEqual(100)
-  })
+  }, RENDER_TEST_TIMEOUT_MS)
 
   it('snapshot stores survive repeated re-seeding at large size (no derivation blowup)', () => {
     const listeners: PortListener[] = Array.from({ length: 300 }, (_, i) =>

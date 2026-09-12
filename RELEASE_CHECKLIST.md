@@ -1,10 +1,12 @@
 # Release Checklist — v1.0.0 Release Candidate
 
-Status at end of Phase 10E. No tag has been created; no public release exists.
+Status at end of Phase 10F (final release audit). No tag has been created;
+no public release exists.
 
 ## Source & version
 
-- [x] Clean Git baseline at Phase 10D commit `76e94a8`
+- [x] Clean Git baseline at Phase 10E commit `ca089d6` (+ Phase 10F
+      release-blocker fix: nested `capability` wire contract, see CHANGELOG)
 - [x] Version 1.0.0 synchronized (package.json, package-lock.json,
       src-tauri/Cargo.toml, Cargo.lock, tauri.conf.json) — pinned by
       `src/releaseVersion.test.ts`
@@ -19,7 +21,8 @@ Status at end of Phase 10E. No tag has been created; no public release exists.
 - [x] `npm run test:coverage` — recorded in Phase 10E report
 - [x] `npm run build` — frontend production build
 - [x] `cargo check --locked` — 0 warnings
-- [x] `cargo test --locked` — 380 deterministic tests
+- [x] `cargo test --locked` — 381 deterministic tests (Phase 10F: +1
+      wire-contract serialization guard)
 - [x] `cargo test --locked -- --ignored` — 11 live/deterministic tests
 - [x] Static safety guards (frontend + Rust) — green
 - [x] `npm audit` — 0 vulnerabilities
@@ -60,7 +63,8 @@ Status at end of Phase 10E. No tag has been created; no public release exists.
 
 - [x] Unsigned status documented (README, install doc)
 - [x] Auto-updater disabled/deferred (no unsigned remote update)
-- [x] No build artifacts committed (target/, dist/, coverage/, installers
-      ignored; release-checksums.txt tracked)
+- [x] No build artifacts committed (target/, dist/, coverage/, installers,
+      and release-artifacts/ all ignored — checksums live untracked in
+      release-artifacts/release-checksums.txt)
 - [ ] **Git tag `v1.0.0`** — intentionally NOT created (Phase 10F decides)
 - [ ] **Public release / artifact upload** — intentionally NOT done

@@ -44,6 +44,14 @@ utility for understanding and safely managing local development environments.
 - Auto-update is disabled; updates are manual until signed infrastructure
   exists.
 
+### Release-candidate hardening (Phase 10F audit)
+
+- Fixed: the Ports and Services views could fail to render with live
+  discovery data — the backend flattened `capability` fields into each
+  control entry while the frontend contract nests them under
+  `capability`, so `ControlActions` crashed on real snapshots. A
+  serialization-shape regression test now pins the wire contract.
+
 ## 0.1.0 — Development phases 0–10D
 
 Internal development releases (not published).

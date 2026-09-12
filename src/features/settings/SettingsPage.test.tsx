@@ -81,7 +81,12 @@ describe('SettingsPage', () => {
     expect(
       screen.getByRole('switch', { name: 'Run at Windows startup' }),
     ).not.toBeChecked()
-    expect(screen.getByLabelText(/Refresh interval/i)).toHaveValue(3000)
+    // Assert on the DOM (not just the store) so the loaded render has
+    // committed before the value is read — under heavy parallel-suite CPU
+    // starvation the store can flip `loaded` a tick before React commits.
+    await waitFor(() =>
+      expect(screen.getByLabelText(/Refresh interval/i)).toHaveValue(3000),
+    )
   })
 
   it('saves immediately when Auto Refresh is toggled off', async () => {
