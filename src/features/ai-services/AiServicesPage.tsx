@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { BrainCircuit, ChevronDown, ChevronRight, Cpu, ExternalLink, RefreshCw } from 'lucide-react'
 
 import { RefreshButton } from '@/app/components/RefreshButton'
@@ -33,7 +33,18 @@ function RuntimeCard({ runtime }: { runtime: AiRuntimeSnapshot }) {
   const refreshing = useAiRuntimeStore((state) => state.refreshing)
 
   const caps = runtime.capabilities
-  const loadedById = new Map(runtime.loadedModels.map((m) => [m.id, m]))
+  // Phase 10D (§I/§F): hoist all per-table derivations out of the row loop.
+  // The previous per-row `runtime.models.some(...)` calls are O(n) each over
+  // every row (O(n²) total — measurable at 500 models); the flags and the
+  // loaded-model index below make the table render O(n).
+  const showParameterColumn = runtime.models.some((m) => m.parameterSize !== undefined)
+  const showQuantizationColumn = runtime.models.some((m) => m.quantization !== undefined)
+  const showSizeColumn = runtime.models.some((m) => m.sizeBytes !== undefined)
+  const showVramColumn = runtime.models.some((m) => m.vramBytes !== undefined)
+  const loadedById = useMemo(
+    () => new Map(runtime.loadedModels.map((m) => [m.id, m])),
+    [runtime.loadedModels],
+  )
 
   return (
     <section className="rounded-lg border border-slate-800">
@@ -125,17 +136,17 @@ function RuntimeCard({ runtime }: { runtime: AiRuntimeSnapshot }) {
               <thead>
                 <tr className="border-b border-slate-800 text-slate-500">
                   <th className="px-2 py-1.5 font-medium">Model</th>
-                  {runtime.models.some((m) => m.parameterSize !== undefined) && (
+                  {showParameterColumn && (
                     <th className="px-2 py-1.5 font-medium">Parameters</th>
                   )}
-                  {runtime.models.some((m) => m.quantization !== undefined) && (
+                  {showQuantizationColumn && (
                     <th className="px-2 py-1.5 font-medium">Quantization</th>
                   )}
-                  {runtime.models.some((m) => m.sizeBytes !== undefined) && (
+                  {showSizeColumn && (
                     <th className="px-2 py-1.5 font-medium">Disk</th>
                   )}
                   {caps.loadedModels && <th className="px-2 py-1.5 font-medium">Loaded</th>}
-                  {runtime.models.some((m) => m.vramBytes !== undefined) && (
+                  {showVramColumn && (
                     <th className="px-2 py-1.5 font-medium">VRAM</th>
                   )}
                 </tr>
@@ -146,13 +157,13 @@ function RuntimeCard({ runtime }: { runtime: AiRuntimeSnapshot }) {
                   return (
                     <tr key={model.id} className="border-b border-slate-800/50 text-slate-300">
                       <td className="px-2 py-1.5 font-mono">{model.id}</td>
-                      {runtime.models.some((m) => m.parameterSize !== undefined) && (
+                      {showParameterColumn && (
                         <td className="px-2 py-1.5">{model.parameterSize ?? '—'}</td>
                       )}
-                      {runtime.models.some((m) => m.quantization !== undefined) && (
+                      {showQuantizationColumn && (
                         <td className="px-2 py-1.5">{model.quantization ?? '—'}</td>
                       )}
-                      {runtime.models.some((m) => m.sizeBytes !== undefined) && (
+                      {showSizeColumn && (
                         <td className="px-2 py-1.5">{model.sizeBytes !== undefined ? formatBytes(model.sizeBytes) : '—'}</td>
                       )}
                       {caps.loadedModels && (
@@ -166,7 +177,7 @@ function RuntimeCard({ runtime }: { runtime: AiRuntimeSnapshot }) {
                           )}
                         </td>
                       )}
-                      {runtime.models.some((m) => m.vramBytes !== undefined) && (
+                      {showVramColumn && (
                         <td className="px-2 py-1.5">
                           {(loaded?.vramBytes ?? model.vramBytes) !== undefined
                             ? formatBytes(loaded?.vramBytes ?? model.vramBytes ?? 0)

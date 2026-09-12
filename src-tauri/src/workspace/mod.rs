@@ -1040,13 +1040,18 @@ pub(crate) async fn create_workspace(
         if !root.is_dir() {
             return Err("Project root does not exist.".to_string());
         }
-        let mut workspaces = inner
-            .workspaces
-            .lock()
-            .map_err(|_| "workspace list lock poisoned".to_string())?;
-        if workspaces.iter().any(|w| w.projectRoot == project_root) {
-            return Err("A workspace already exists for this project.".to_string());
-        }
+        // Phase 10D (§J): fast-path duplicate check WITHOUT holding the list
+        // lock across spec derivation (filesystem reads). The authoritative
+        // check is re-run under the lock after derivation.
+        {
+            let workspaces = inner
+                .workspaces
+                .lock()
+                .map_err(|_| "workspace list lock poisoned".to_string())?;
+            if workspaces.iter().any(|w| w.projectRoot == project_root) {
+                return Err("A workspace already exists for this project.".to_string());
+            }
+        } // list lock released before filesystem I/O
         // Recovery path (Phase 10B correction): creating a workspace
         // re-derives every spec fresh from project manifests, so it is the
         // natural place to rebuild trusted launch-spec state after poison.
@@ -1056,7 +1061,16 @@ pub(crate) async fn create_workspace(
         if inner.specs.poisoned() {
             inner.specs.recover();
         }
-        let workspace = build_workspace(&root, &inner.specs);
+        let workspace = build_workspace(&root, &inner.specs); // fs I/O outside the list lock
+        let mut workspaces = inner
+            .workspaces
+            .lock()
+            .map_err(|_| "workspace list lock poisoned".to_string())?;
+        // Authoritative duplicate re-check after the I/O window: two racing
+        // creators for the same root — the loser is refused.
+        if workspaces.iter().any(|w| w.projectRoot == project_root) {
+            return Err("A workspace already exists for this project.".to_string());
+        }
         let view = workspace_view(&inner, &workspace);
         workspaces.push(workspace);
         Ok(view)

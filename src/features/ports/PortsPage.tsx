@@ -131,6 +131,7 @@ export function PortsPage() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search port, service, project, process, PID, branch, or address…"
+            aria-label="Filter ports and services"
             className="w-full rounded-md border border-slate-800 bg-slate-900 py-1.5 pl-8 pr-3 text-sm text-slate-200 placeholder:text-slate-600 focus:border-slate-600 focus:outline-none"
           />
         </div>

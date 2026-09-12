@@ -121,11 +121,24 @@ function IssuesList({ issues }: { issues: ReadinessIssue[] }) {
   )
 }
 
-/** The conflict dialog: honest ownership + advisory free-port suggestions. */
+/** The conflict dialog: honest ownership + advisory free-port suggestions.
+ * Phase 10D (§W): Escape closes (non-destructive) and focus is pulled inside
+ * on open so keyboard users are never tabbing "behind" the modal. */
 function ConflictDialog({ report, suggestions }: { report: PortConflictReport; suggestions: PortCandidate[] }) {
   const clearPortReport = useConflictsStore((state) => state.clearPortReport)
+  const closeRef = useRef<HTMLButtonElement>(null)
   const available = suggestions.filter((s) => s.status === 'available')
   const used = suggestions.filter((s) => s.status === 'used')
+
+  useEffect(() => {
+    closeRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') clearPortReport()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [clearPortReport])
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
@@ -193,6 +206,7 @@ function ConflictDialog({ report, suggestions }: { report: PortConflictReport; s
         </div>
         <div className="flex justify-end border-t border-slate-800 px-4 py-3">
           <button
+            ref={closeRef}
             type="button"
             onClick={clearPortReport}
             className="rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-600"

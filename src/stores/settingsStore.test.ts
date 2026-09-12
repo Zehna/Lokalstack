@@ -140,4 +140,28 @@ describe('settingsStore', () => {
     expect(applied.at(-1)?.autoRefresh).toBe(false)
     unregister()
   })
+
+  // Phase 10D (§R): persistence is explicit-only. Loads, polling ticks and
+  // render cycles must never write to disk — only save/reset/toggle do.
+  it('never writes on load — only save/reset/toggle persist', async () => {
+    await useSettingsStore.getState().load()
+    // Several more loads (Settings-page remount, StrictMode double-invoke).
+    await useSettingsStore.getState().load()
+    expect(mocks.saveAppSettings).not.toHaveBeenCalled()
+    expect(mocks.resetAppSettings).not.toHaveBeenCalled()
+    expect(mocks.setRunAtStartup).not.toHaveBeenCalled()
+  })
+
+  it('save is not re-triggered by polling appliers or repeated state reads', async () => {
+    await useSettingsStore.getState().load()
+    const before = mocks.saveAppSettings.mock.calls.length
+    // Simulate polling cycles + render re-reads: applier callbacks fire and
+    // components re-read state, none of which may persist.
+    const unregister = registerPollingApplier(() => {
+      void useSettingsStore.getState().settings
+    })
+    unregister()
+    await useSettingsStore.getState().save({ portRefreshIntervalMs: 5000 })
+    expect(mocks.saveAppSettings.mock.calls.length).toBe(before + 1)
+  })
 })

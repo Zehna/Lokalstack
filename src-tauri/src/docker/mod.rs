@@ -434,6 +434,12 @@ async fn snapshot_with(
     let transport = Arc::clone(&state.transport);
     let projects_arc = Arc::clone(&projects.cache);
     let snapshot: DockerEngineSnapshot = tauri::async_runtime::spawn_blocking(move || {
+        // Phase 10D (§J): this lock is the deliberate single-flight gate — the
+        // engine cycle (pipe I/O) runs inside it to serialize concurrent
+        // frontend refreshes. Slow I/O here is BOUNDED, not broad: the pipe
+        // transport enforces REQUEST_TIMEOUT per request and parse counts are
+        // capped by MAX_BODY_BYTES/MAX_CONTAINERS, so worst-case hold is
+        // bounded (stale-cache readers also serve without waiting past it).
         let Ok(mut inner) = inner_arc.lock() else {
             return Err("docker state poisoned".to_string());
         };

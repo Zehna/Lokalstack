@@ -489,11 +489,6 @@ impl LogRing {
         self.lines.len()
     }
 
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-    }
-
     pub(crate) fn last_index(&self) -> u64 {
         self.last_index
     }

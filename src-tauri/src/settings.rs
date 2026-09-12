@@ -111,12 +111,6 @@ impl AppSettings {
             .clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS);
         self
     }
-
-    /// Poll interval as a `Duration` for runtime consumers (test observability).
-    #[cfg(test)]
-    fn poll_interval(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(u64::from(self.port_refresh_interval_ms))
-    }
 }
 
 /// Absolute path of the settings file (never inside a source tree).
@@ -394,7 +388,7 @@ mod tests {
 
     #[test]
     fn reconcile_with_applies_only_required_action() {
-        use startup::{reconcile_with, ReconcileAction};
+        use startup::reconcile_with;
         let mut calls: Vec<(bool, bool)> = Vec::new();
         let mut settings = AppSettings {
             run_at_startup: true,

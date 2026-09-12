@@ -42,3 +42,24 @@ body {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* Phase 10D (§AF): keyboard focus must always be visible. Components add
+ * focused `focus-visible:ring-*` styling; this guarantees a visible outline
+ * everywhere else without suppressing the default outline. */
+:focus-visible {
+  outline: 2px solid #38bdf8; /* sky-400 */
+  outline-offset: 1px;
+}
+
+/* Phase 10D (§AE): non-essential motion is disabled for users who prefer
+ * reduced motion. Loading spinners keep their meaning through the visible
+ * "Refreshing…" text states, so nothing becomes incomprehensible. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

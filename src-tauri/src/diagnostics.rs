@@ -27,6 +27,13 @@ use std::sync::{Mutex, OnceLock};
 /// bounds everything; diagnostics are not exempt).
 pub(crate) const MAX_SESSION_LINES: usize = 2_000;
 
+/// Cross-session cap (Phase 10D §S): the file is append-mode, so without a
+/// size ceiling it would grow across many sessions. On open, a file larger
+/// than this is truncated — old sessions' lines are pruned wholesale, the
+/// current session starts fresh and stays far below the cap
+/// (2_000 lines × ~120 B ≈ 240 KB worst case).
+const MAX_FILE_BYTES: u64 = 256 * 1024;
+
 static LINES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 static LOG_FILE: OnceLock<Option<Mutex<File>>> = OnceLock::new();
 
@@ -129,15 +136,22 @@ pub(crate) fn redact(message: &str) -> String {
 /// become the reason the app fails.
 fn log_file() -> &'static Option<Mutex<File>> {
     LOG_FILE.get_or_init(|| {
-        local_app_data_dir().and_then(|dir| {
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(dir.join("localstack.log"))
-                .ok()
-                .map(Mutex::new)
-        })
+        local_app_data_dir().and_then(|dir| open_bounded_log(&dir).map(Mutex::new))
     })
+}
+
+/// Open (or create) the session log inside `dir`, enforcing the cross-session
+/// size cap: an oversized file from previous sessions is truncated before
+/// appending, so total log growth stays bounded forever. A file already
+/// within the cap is preserved and appended to.
+fn open_bounded_log(dir: &std::path::Path) -> Option<File> {
+    let path = dir.join("localstack.log");
+    let oversized = std::fs::metadata(&path).map(|m| m.len() > MAX_FILE_BYTES).unwrap_or(false);
+    if oversized {
+        // Truncate in place — same directory, same file, fresh content.
+        File::create(&path).ok()?;
+    }
+    OpenOptions::new().create(true).append(true).open(&path).ok()
 }
 
 /// Log a startup/subsystem event (`info` level).
@@ -328,5 +342,55 @@ mod tests {
     fn session_bound_is_a_sane_constant() {
         assert!(MAX_SESSION_LINES >= 500, "too small to be useful");
         assert!(MAX_SESSION_LINES <= 10_000, "too large to bound anything");
+    }
+
+    /// Phase 10D (§S): the log file is append-mode, so total growth must be
+    /// bounded ACROSS sessions too. An oversized file left by previous
+    /// sessions is truncated on open; the original content is proven present
+    /// first (the truncation is deliberate pruning, not data loss in a valid
+    /// file). A within-cap file is preserved.
+    #[test]
+    fn oversized_log_file_is_truncated_on_open() {
+        let dir = std::env::temp_dir().join(format!("lscc_diag_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("localstack.log");
+        std::fs::write(&path, "x".repeat((MAX_FILE_BYTES * 2) as usize)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            MAX_FILE_BYTES * 2,
+            "setup: oversized file present before open"
+        );
+
+        let file = open_bounded_log(&dir).expect("log file opens");
+        drop(file);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            0,
+            "oversized pre-existing log must be truncated on open"
+        );
+
+        // Within-cap file: preserved and appended to (never truncated).
+        std::fs::write(&path, "session-start\n").unwrap();
+        let file = open_bounded_log(&dir).expect("second open");
+        drop(file);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            "session-start\n".len() as u64,
+            "within-cap file must be preserved"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 10D (§S): worst-case session growth stays far below the file
+    /// cap — the two bounds compose.
+    #[test]
+    fn session_line_bound_composes_with_file_cap() {
+        // ~120 B is a generous average line; 2_000 × 120 B = 240 KB < 256 KB.
+        assert!(
+            (MAX_SESSION_LINES as u64) * 120 < MAX_FILE_BYTES,
+            "a full session must fit under the file cap"
+        );
     }
 }

@@ -25,6 +25,8 @@ mod dependencies;
 mod discovery;
 mod health;
 mod intelligence;
+#[cfg(test)]
+mod perf_baseline;
 mod process;
 mod settings;
 mod project;

@@ -443,7 +443,21 @@ pub(crate) fn refresh_runtimes(
         Err(_) => return Vec::new(),
     };
 
-    let cache = state.cache.lock().ok();
+    // Phase 10D (§J): copy trusted cached state out, then release the lock
+    // BEFORE any probe I/O — a hung runtime costs its own 2 s timeout, never
+    // a lock hold that stalls unrelated AI readers or the store-back path.
+    let cached_by_id: std::collections::HashMap<String, (AiRuntimeSnapshot, Instant, Instant)> =
+        state
+            .cache
+            .lock()
+            .ok()
+            .map(|cache| {
+                cache
+                    .iter()
+                    .map(|(id, entry)| (id.clone(), (entry.snapshot.clone(), entry.probed_at, entry.models_at)))
+                    .collect()
+            })
+            .unwrap_or_default();
 
     // Bounded concurrency over a work-stealing pool: chunk the probes.
     let mut snapshots: Vec<AiRuntimeSnapshot> = Vec::with_capacity(runtimes.len());
@@ -452,11 +466,9 @@ pub(crate) fn refresh_runtimes(
         // Sequential within this build (blocking client); the bound keeps the
         // worst case at ceil(n/4) × 2 s and off the discovery path entirely.
         for runtime in chunk {
-            let cached = cache.as_ref().and_then(|cache| {
-                cache.get(&runtime.runtime_id).map(|entry| {
-                    (&entry.snapshot, entry.probed_at, entry.models_at)
-                })
-            });
+            let cached = cached_by_id
+                .get(&runtime.runtime_id)
+                .map(|(snapshot, probed_at, models_at)| (snapshot, *probed_at, *models_at));
             let fresh_models = bypass_cache
                 || cached
                     .map(|(_, _, models_at)| Instant::now().duration_since(models_at) >= MODELS_TTL)
@@ -465,8 +477,8 @@ pub(crate) fn refresh_runtimes(
             // Inventory refresh is on its own, slower cadence: when only the
             // health TTL expired, reuse the cached model list.
             if !fresh_models {
-                if let Some(entry) = cache.as_ref().and_then(|c| c.get(&runtime.runtime_id)) {
-                    snapshot.models = entry.snapshot.models.clone();
+                if let Some((snapshot_cached, _, _)) = cached_by_id.get(&runtime.runtime_id) {
+                    snapshot.models = snapshot_cached.models.clone();
                 }
             }
             snapshots.push(snapshot);
@@ -475,7 +487,7 @@ pub(crate) fn refresh_runtimes(
 
     // Store back + drop entries for runtimes that disappeared (identity
     // invalidation: new pid/creation → new id → old entry orphaned).
-    if let Some(mut cache) = cache {
+    if let Ok(mut cache) = state.cache.lock() {
         let now = Instant::now();
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -678,16 +690,6 @@ mod tests {
             }
         });
         port
-    }
-
-    /// A managed-discovery-shaped response whose PID owns the stub port.
-    /// The stub's PID is unknowable from outside, so the test fabricates a
-    /// PID + classifies it as Ollama via the process name and injects the
-    /// stub's port. The endpoint trust policy maps 127.0.0.1 → probe-safe.
-    fn stub_response(port: u16, pid: u32) -> crate::discovery::PortListenersResponse {
-        let processes = vec![process(pid, "ollama.exe")];
-        let listeners = vec![listener(port, pid)];
-        response(processes, listeners)
     }
 
     /// LIVE: path-aware stub → parsed snapshot (Ready + version + models).
