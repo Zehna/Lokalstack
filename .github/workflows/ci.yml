@@ -9,7 +9,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
 
 # Minimum permissions: read-only checkout is all CI needs. No secrets, no
