@@ -225,3 +225,24 @@ hygiene) described below.
 
 **PASS** — all scenarios resolved PASS or justified N/A; zero release
 blockers; user state restored byte-identically; v1.0.0 untouched throughout.
+
+---
+
+## Phase 11A final gate (recorded after PR integration)
+
+- QA report and hygiene integrated into main via **PR #1** (merge commit
+  `1f991e0ac33a24268677b638d56677c80b24cd9b`); PR CI
+  (run 34983113852) and merged-main CI (run 34983606723) both **success**.
+- Branch protection on main verified via the protection API after applying:
+  required status check `Quality gates (windows-latest)` (context confirmed
+  from actual GitHub check runs on `6e2c03f`, not assumed from YAML),
+  `strict: true`, `required_approving_review_count: 0`,
+  `allow_force_pushes: false`, `allow_deletions: false`,
+  `enforce_admins: false`. GitHub accepted the full payload — no partial
+  protection.
+- `v1.0.0` re-verified resolving to
+  `6e2c03f6ad8b2099f5cf4ba52995916a200d9acd` after integration.
+- Workflow engaged end-to-end once protection was active: this final-gate
+  annotation itself reached main through a topic branch + PR + required CI,
+  as the approved balanced policy intends.
+- **Final Phase 11A verdict: PASS** — all Phase 11A success criteria met.
