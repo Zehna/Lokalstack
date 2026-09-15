@@ -89,6 +89,18 @@ describe('SettingsPage', () => {
     )
   })
 
+  it('exposes the close-behavior select with an accessible name', async () => {
+    render(<SettingsPage />)
+    await waitFor(() => expect(useSettingsStore.getState().loaded).toBe(true))
+
+    // Phase 11A live QA: the select had no accessible name because the Row
+    // label was never associated with it (missing htmlFor). This asserts the
+    // semantic contract, not implementation details.
+    expect(
+      screen.getByRole('combobox', { name: 'Close behavior' }),
+    ).toBeInTheDocument()
+  })
+
   it('saves immediately when Auto Refresh is toggled off', async () => {
     render(<SettingsPage />)
     await waitFor(() => expect(useSettingsStore.getState().loaded).toBe(true))
