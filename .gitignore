@@ -24,3 +24,7 @@ release-artifacts/
 *.exe
 *.msi
 msi_install.log
+
+# Locally downloaded CI release-candidate artifact sets (Phase 11A) — these
+# are read-only QA inputs and must never be committed.
+github-release-artifacts/
