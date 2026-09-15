@@ -320,6 +320,7 @@ export function SettingsPage() {
           <Row
             label="Close behavior"
             description="Exit closes LocalStack. Minimize to tray keeps it running in the notification area. Closing never stops your services."
+            htmlFor="setting-close-behavior"
           >
             <Select<CloseBehavior>
               id="setting-close-behavior"
