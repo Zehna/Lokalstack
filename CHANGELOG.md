@@ -3,6 +3,17 @@
 All notable changes to LocalStack Control Center are documented here.
 The project follows semantic versioning from 1.0.0 onward.
 
+## 1.0.1 — Patch Release Candidate (2026-09-17)
+
+### Fixed
+
+- **Settings accessibility** — the Close behavior selector is now
+  associated with its visible label, so accessibility APIs and screen
+  readers expose the combobox as "Close behavior".
+- **Windows tray accessibility** — the notification-area icon now uses
+  the canonical "LocalStack Control Center" tooltip, giving the tray
+  icon a useful accessible identity.
+
 ## 1.0.0 — Release Candidate (2026-09-12)
 
 The first complete release. LocalStack Control Center is a Windows desktop

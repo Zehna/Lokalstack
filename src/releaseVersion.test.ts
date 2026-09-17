@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-const RELEASE_VERSION = '1.0.0'
+const RELEASE_VERSION = '1.0.1'
 
 function readJson(relativePath: string): Record<string, unknown> {
   return JSON.parse(readFileSync(resolve(process.cwd(), relativePath), 'utf-8')) as Record<
@@ -30,7 +30,7 @@ function readTomlVersion(relativePath: string): string {
 }
 
 describe('release version consistency (Phase 10E)', () => {
-  it('package.json, tauri.conf.json and Cargo.toml all declare 1.0.0', () => {
+  it('package.json, tauri.conf.json and Cargo.toml all declare 1.0.1', () => {
     const pkg = readJson('package.json') as { version: string }
     const conf = readJson('src-tauri/tauri.conf.json') as { version: string }
     const cargo = readTomlVersion('src-tauri/Cargo.toml')
