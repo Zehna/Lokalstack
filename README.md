@@ -33,7 +33,7 @@ and manage your own dev services safely.
 
 ## Installation
 
-1. Download `LocalStack Control Center_1.0.0_x64-setup.exe` (NSIS) or the
+1. Download `LocalStack Control Center_1.0.1_x64-setup.exe` (NSIS) or the
    `.msi` from the release artifacts.
 2. Run the installer. **The binary is currently unsigned** — SmartScreen may
    show "Windows protected your PC"; choose *More info → Run anyway* if you

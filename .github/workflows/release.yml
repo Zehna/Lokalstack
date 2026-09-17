@@ -80,7 +80,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: localstack-control-center-1.0.0-rc
+          name: localstack-control-center-1.0.1-rc
           path: release-artifacts/
           retention-days: 14
           if-no-files-found: error
