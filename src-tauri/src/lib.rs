@@ -58,6 +58,13 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Canonical tray identity for Windows accessibility (Phase 11B2): Phase 11A
+/// live QA found the notification-area icon exposed no useful accessible
+/// name. On Windows the tray tooltip is what UIA/screen readers announce as
+/// the icon's name. Must stay in lockstep with the product identity — a
+/// regression test asserts equality with the configured package name.
+const TRAY_TOOLTIP_LABEL: &str = "LocalStack Control Center";
+
 /// Build the tray icon with the small operational menu (spec §L):
 /// Open / Refresh / separator / Exit. No destructive items — tray menus
 /// never start, stop, or kill anything (spec §AM).
@@ -74,6 +81,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .icon(app.default_window_icon().cloned().ok_or_else(|| {
             tauri::Error::AssetNotFound("default window icon".into())
         })?)
+        .tooltip(TRAY_TOOLTIP_LABEL)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
@@ -315,5 +323,21 @@ mod tests {
         assert!(args.iter().any(|a| a == "--startup"));
         let args = vec!["app.exe".to_string(), "--startup-extra".to_string()];
         assert!(!args.iter().any(|a| a == "--startup"));
+    }
+
+    // ---- Tray identity (Phase 11B2 accessibility) -----------------------
+
+    // Phase 11A Windows QA found the notification-area icon exposed a null
+    // accessible name (no tooltip set). The tray must label itself with the
+    // canonical product identity so screen readers/UIA can announce it.
+    // The real Windows exposure is verified live (tooltip → accName); this
+    // test pins the canonical label that `build_tray` must consume.
+    #[test]
+    fn tray_tooltip_label_is_the_canonical_product_identity() {
+        assert!(!TRAY_TOOLTIP_LABEL.trim().is_empty());
+        assert_eq!(TRAY_TOOLTIP_LABEL, "LocalStack Control Center");
+        // Stay in lockstep with the configured product identity.
+        let ctx: tauri::Context<tauri::Wry> = tauri::generate_context!();
+        assert_eq!(TRAY_TOOLTIP_LABEL, ctx.package_info().name);
     }
 }
