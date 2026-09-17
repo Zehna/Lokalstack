@@ -64,6 +64,15 @@ jobs:
       # which runs `npm run build` (beforeBuildCommand) and compiles the
       # Rust crate WITH the custom-protocol feature so the bundled assets
       # are embedded (never the dev URL).
+      # Cache hygiene: the Cargo cache restores src-tauri/target wholesale,
+      # including a bundle/ directory from a previous release (e.g. 1.0.0
+      # installers). Tauri does not clear it, and the collect step globs
+      # *.exe/*.msi, so stale bundles would ship alongside the fresh ones
+      # (observed on the first 1.0.1 run). Remove stale bundle output before
+      # building; the Rust compile cache stays intact.
+      - name: Clear stale bundle outputs
+        run: rm -rf src-tauri/target/release/bundle
+
       - name: Tauri build (NSIS + MSI)
         run: npm run tauri build
 
