@@ -12,6 +12,11 @@
 use std::io::{self, Write};
 use std::path::Path;
 
+use super::ids;
+
+#[cfg(test)]
+use std::path::PathBuf;
+
 /// Atomically replace the file at `dest` with `bytes`:
 ///
 /// 1. `create_new` a uniquely-named temp file inside the LocalStack-owned
