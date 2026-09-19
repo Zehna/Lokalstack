@@ -78,6 +78,10 @@ windows-sys = { version = "0.60", features = [
   # Local diagnostics (Phase 10B): SHGetKnownFolderPath/FOLDERID_LocalAppData
   # for the log file location. Diagnostics are local-only — no telemetry.
   "Win32_System_Com",
+  # Diagnostics (Phase 11C): BCryptGenRandom system-preferred RNG for opaque
+  # incident/bundle/export IDs, and (Task 8) CryptProtectData/CryptUnprotectData
+  # for DPAPI current-user bundle encryption. No new crypto crate.
+  "Win32_Security_Cryptography",
 ] }
 
 [dev-dependencies]

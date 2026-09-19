@@ -82,7 +82,12 @@ pub(crate) fn local_app_data_dir() -> Option<PathBuf> {
 /// (Consumed from the bundle-index task onward.)
 #[allow(dead_code)]
 pub(crate) fn diagnostics_dir() -> Option<PathBuf> {
-    ensure_subdir("diagnostics")
+    let root = local_app_data_dir()?;
+    let dir = root.join("diagnostics");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+    Some(dir)
 }
 
 /// LocalStack-owned temp staging directory: `<app-data>\diagnostics\temp\`.
@@ -92,7 +97,7 @@ pub(crate) fn diagnostics_dir() -> Option<PathBuf> {
 /// (Consumed from the atomic-write helper task onward.)
 #[allow(dead_code)]
 pub(crate) fn temp_dir() -> Option<PathBuf> {
-    ensure_subdir("diagnostics/temp")
+    ensure_subdir("temp")
 }
 
 /// `<app-data>\diagnostics\emergency\` — prepared eagerly at normal startup
@@ -101,7 +106,7 @@ pub(crate) fn temp_dir() -> Option<PathBuf> {
 /// (Consumed from the panic-emergency-writer task onward.)
 #[allow(dead_code)]
 pub(crate) fn emergency_dir() -> Option<PathBuf> {
-    ensure_subdir("diagnostics/emergency")
+    ensure_subdir("emergency")
 }
 
 /// `<app-data>\diagnostics\failed\` — quarantine for emergency records that
@@ -109,7 +114,7 @@ pub(crate) fn emergency_dir() -> Option<PathBuf> {
 /// (Consumed from the crash-recovery task onward.)
 #[allow(dead_code)]
 pub(crate) fn failed_dir() -> Option<PathBuf> {
-    ensure_subdir("diagnostics/failed")
+    ensure_subdir("failed")
 }
 
 /// `<app-data>\diagnostics\failed\` created without creating any sibling.
@@ -117,7 +122,7 @@ pub(crate) fn failed_dir() -> Option<PathBuf> {
 #[allow(dead_code)]
 pub(crate) fn failed_dir_exact() -> Option<PathBuf> {
     ensure_exact_subdir("diagnostics/failed")
-}
+} // exact form joins the root directly, so it keeps the full relative path
 
 /// `<app-data>\diagnostics\temp\` created without creating any sibling —
 /// used by the startup reconciliation tests to prove that purging stale
@@ -127,10 +132,11 @@ pub(crate) fn failed_dir_exact() -> Option<PathBuf> {
 #[allow(dead_code)]
 pub(crate) fn temp_dir_exact() -> Option<PathBuf> {
     ensure_exact_subdir("diagnostics/temp")
-}
+} // exact form joins the root directly, so it keeps the full relative path
 
-/// Resolve the LocalStack root, then create `sub` beneath the diagnostics
-/// subtree on demand. Returns `None` on any failure (caller degrades).
+/// Resolve the LocalStack root, then create `sub` (relative to the
+/// diagnostics subtree) on demand. Callers pass e.g. `"temp"` — the
+/// `diagnostics/` prefix is added here, exactly once.
 #[allow(dead_code)] // consumed task-by-task; module-wide allow would hide real dead code
 fn ensure_subdir(sub: &str) -> Option<PathBuf> {
     let root = local_app_data_dir()?;

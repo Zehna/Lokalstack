@@ -17,7 +17,10 @@
 //! start-up, subsystem failures, and panics a local breadcrumb trail without
 //! changing any subsystem behavior.
 
+pub(crate) mod ids;
+pub(crate) mod incidents;
 pub(crate) mod paths;
+pub(crate) mod storage;
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
