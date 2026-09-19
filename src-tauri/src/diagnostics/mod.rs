@@ -17,9 +17,10 @@
 //! start-up, subsystem failures, and panics a local breadcrumb trail without
 //! changing any subsystem behavior.
 
+pub(crate) mod paths;
+
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -36,6 +37,15 @@ const MAX_FILE_BYTES: u64 = 256 * 1024;
 
 static LINES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 static LOG_FILE: OnceLock<Option<Mutex<File>>> = OnceLock::new();
+
+/// Canonical `Path`-typed accessor over [`paths::local_app_data_dir`].
+/// The `OnceLock` in `paths` memoizes the resolved directory for the
+/// program lifetime, so re-borrowing it as `&'static Path` is sound.
+/// (Consumed by the snapshot/cache tasks onward.)
+#[allow(dead_code)]
+pub(crate) fn app_data_path() -> Option<&'static std::path::Path> {
+    paths::LOCAL_APP_DATA.get().and_then(|p| p.as_deref())
+}
 
 /// Keys whose values must never reach the log (case-insensitive substring
 /// match on the key portion of `key=value` / `key: value` tokens).
@@ -169,49 +179,10 @@ pub(crate) fn warn(subsystem: &str, message: &str) {
 /// `FOLDERID_LocalAppData`, creating it on demand. Shared by diagnostics
 /// (log file) and settings (settings.json) so both live in the same
 /// LocalStack-owned location — never inside a source tree (spec §E).
-pub(crate) fn local_app_data_dir() -> Option<PathBuf> {
-    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DIR.get_or_init(|| {
-        #[cfg(windows)]
-        {
-            use windows_sys::Win32::UI::Shell::{
-                SHGetKnownFolderPath, FOLDERID_LocalAppData, KF_FLAG_DEFAULT,
-            };
-            unsafe {
-                let mut raw: *mut u16 = std::ptr::null_mut();
-                let hr = SHGetKnownFolderPath(
-                    &FOLDERID_LocalAppData,
-                    KF_FLAG_DEFAULT as u32,
-                    std::ptr::null_mut(),
-                    &mut raw,
-                );
-                if hr != 0 || raw.is_null() {
-                    return None;
-                }
-                let len = {
-                    let mut l = 0usize;
-                    while *raw.add(l) != 0 {
-                        l += 1;
-                    }
-                    l
-                };
-                let slice = std::slice::from_raw_parts(raw, len);
-                let path = String::from_utf16_lossy(slice);
-                windows_sys::Win32::System::Com::CoTaskMemFree(raw.cast());
-                let dir = PathBuf::from(path).join("localstack-control-center");
-                if std::fs::create_dir_all(&dir).is_err() {
-                    return None;
-                }
-                Some(dir)
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            None
-        }
-    })
-    .clone()
-}
+///
+/// Phase 11C: implementation moved to [`paths::local_app_data_dir`]; this
+/// re-export preserves the exact existing call-site contract.
+pub(crate) use paths::local_app_data_dir;
 
 /// Log a typed subsystem failure (`error` level).
 pub(crate) fn error(subsystem: &str, message: &str) {
