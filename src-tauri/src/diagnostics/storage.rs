@@ -85,6 +85,12 @@ pub(crate) fn test_scratch_dir(name: &str) -> Option<PathBuf> {
     Some(dir)
 }
 
+/// Remove a scratch directory created by `test_scratch_dir` (test cleanup).
+#[cfg(test)]
+pub(crate) fn remove_scratch_dir(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -25,6 +25,7 @@ pub(crate) mod emergency;
 pub(crate) mod incidents;
 pub(crate) mod redact_export;
 pub(crate) mod paths;
+pub(crate) mod recovery;
 pub(crate) mod policy;
 pub(crate) mod storage;
 pub(crate) mod worker;

@@ -187,6 +187,29 @@ pub fn run() {
                 let prepared = diagnostics::emergency::prepare_once();
                 diagnostics::emergency::install(diagnostics::cache::global(), prepared.ok());
             }
+            // Phase 11C (§7): finalize any pending crash record BEFORE the
+            // window is shown. Never blocks startup; outcome banner is
+            // surfaced to the frontend via the diagnostics commands (Task 14).
+            {
+                let app_version = env!("CARGO_PKG_VERSION").to_string();
+                if let Some(deps) = diagnostics::recovery::production_deps(
+                    app_version,
+                    Box::new(|outcome| {
+                        if let Some(id) = &outcome.recovered_bundle_id {
+                            diagnostics::info(
+                                "recovery",
+                                &format!("crash record finalized into bundle (pending UI notice)"),
+                            );
+                            let _ = id;
+                        }
+                    }),
+                ) {
+                    let outcome = diagnostics::recovery::finalize_pending(deps);
+                    if matches!(outcome.banner, diagnostics::recovery::RecoveryBanner::Recovered) {
+                        diagnostics::info("recovery", "previous crash recovered into bundle");
+                    }
+                }
+            }
             diagnostics::info("startup", "LocalStack Control Center starting");
 
             // Phase 10C startup order (spec §AK): settings → reconciliation

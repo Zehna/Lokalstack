@@ -251,9 +251,16 @@ fn discovery_cycles_do_not_leak_handles() {
     let after = self_handle_count().expect("handle count must remain readable");
     let burst1 = i64::from(midway) - i64::from(before);
     let burst2 = i64::from(after) - i64::from(midway);
+    // Leak signal = growth that CONTINUES at the same per-cycle rate in the
+    // second burst (Phase 10B §R policy). burst1 is warm-up only: concurrent
+    // tests can RELEASE handles during burst1 (ambient noise can make it
+    // negative), so it must never gate the assertion — burst2 continuing
+    // growth is the per-cycle leak signal. burst2 <= 8 tolerates one-shot
+    // variance; a genuine per-cycle leak would keep growing across the
+    // second burst.
     assert!(
-        burst2 <= burst1 + 8,
-        "handle leak detected: growth continued across bursts \
+        burst2 <= 8,
+        "handle leak detected: second-burst growth continued \
          (burst1 {before}→{midway} = {burst1:+}, burst2 {midway}→{after} = {burst2:+}) \
          — per-cycle leak, not warm-up",
     );
