@@ -17,10 +17,12 @@
 //! start-up, subsystem failures, and panics a local breadcrumb trail without
 //! changing any subsystem behavior.
 
+pub(crate) mod bundle;
 pub(crate) mod cache;
 pub(crate) mod ids;
 pub(crate) mod emergency;
 pub(crate) mod incidents;
+pub(crate) mod redact_export;
 pub(crate) mod paths;
 pub(crate) mod policy;
 pub(crate) mod storage;
@@ -82,6 +84,43 @@ fn is_secret_keyed(word: &str) -> bool {
     })
 }
 
+/// Mask PEM private-key blocks (`-----BEGIN ... PRIVATE KEY-----` through
+/// `-----END ... PRIVATE KEY-----`) before word-level redaction. An
+/// unterminated BEGIN block is redacted to the end of the text (fail-safe).
+fn strip_pem_private_key_blocks(message: &str) -> String {
+    const BEGIN: &str = "-----BEGIN";
+    const END: &str = "-----END";
+    if !message.contains(BEGIN) {
+        return message.to_string();
+    }
+    let mut out = message.to_string();
+    let mut search_from = 0usize;
+    while let Some(rel) = out[search_from..].find(BEGIN) {
+        let start = search_from + rel;
+        // Confirm the header is a private-key block.
+        let header_end = (out[start..].find('\n')).unwrap_or(out.len() - start) + start;
+        if !out[start..header_end.min(out.len())].contains("PRIVATE KEY") {
+            // Not private-key material (e.g. a public certificate): leave it
+            // and keep scanning after this marker.
+            search_from = start + BEGIN.len();
+            continue;
+        }
+        let Some(end_rel) = out[start..].find(END) else {
+            // Unterminated private-key block: redact to end of text.
+            out.replace_range(start.., "[REDACTED-PRIVATE-KEY]");
+            break;
+        };
+        let end = start + end_rel;
+        let end_line_stop = out[end..]
+            .find('\n')
+            .map(|i| end + i)
+            .unwrap_or(out.len());
+        out.replace_range(start..end_line_stop, "[REDACTED-PRIVATE-KEY]");
+        search_from = start;
+    }
+    out
+}
+
 /// Mask secret-shaped tokens in `message`. Handled forms (spec §4):
 ///
 /// - `key=value` / `key:value` — key-bearing token masked whole;
@@ -93,6 +132,7 @@ fn is_secret_keyed(word: &str) -> bool {
 ///
 /// Deterministic, single-pass, no secret-detection framework.
 pub(crate) fn redact(message: &str) -> String {
+    let message = strip_pem_private_key_blocks(message);
     let mut out = String::with_capacity(message.len());
     let mut words = message.split_whitespace().peekable();
     while let Some(word) = words.next() {
@@ -101,6 +141,20 @@ pub(crate) fn redact(message: &str) -> String {
             let split_at = word.find(['=', ':']).expect("is_secret_keyed proved a separator");
             out.push_str(&word[..=split_at]);
             out.push_str("[REDACTED]");
+            // Header form ("Cookie: session=x"): the header VALUE that
+            // follows is masked too. If that value is a scheme ("Bearer"),
+            // the credential after the scheme is masked as well.
+            if word.ends_with(':') {
+                if let Some(next) = words.next() {
+                    let was_bearer = next.eq_ignore_ascii_case("bearer");
+                    out.push_str(" [REDACTED]");
+                    if was_bearer && words.next().is_some() {
+                        out.push_str(" [REDACTED]");
+                    }
+                }
+                out.push(' ');
+                continue;
+            }
             // Scheme may sit in the NEXT word ("Authorization: Bearer x") or
             // inside the masked token itself ("Authorization=Bearer x") —
             // either way the value token that follows is masked too.
