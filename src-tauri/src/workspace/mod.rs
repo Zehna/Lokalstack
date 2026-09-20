@@ -218,6 +218,82 @@ impl WorkspaceEngineState {
 }
 
 // ---------------------------------------------------------------------------
+// Diagnostics snapshot accessors (Phase 11C Task 5) — pure reads of the
+// EXISTING engine state under its EXISTING lock domain. Called from the
+// capture worker thread, never on the polling thread. No behavior change.
+// Consumed by the bundle builder (Tasks 9/10/11) — allow covers the gap.
+// ---------------------------------------------------------------------------
+
+/// Workspace summaries (id/name/service count only — no paths).
+#[allow(dead_code)]
+pub(crate) fn cached_workspace_snapshot(
+    inner: &Inner,
+) -> Vec<crate::diagnostics::cache::WorkspaceSummary> {
+    let Ok(workspaces) = inner.workspaces.lock() else {
+        return Vec::new();
+    };
+    workspaces
+        .iter()
+        .map(|w| crate::diagnostics::cache::WorkspaceSummary {
+            id: w.id.clone(),
+            name: w.name.clone(),
+            service_count: w.services.len(),
+        })
+        .collect()
+}
+
+/// Managed-service summaries (opaque ids + state label only).
+#[allow(dead_code)]
+pub(crate) fn cached_service_snapshot(
+    inner: &Inner,
+) -> Vec<crate::diagnostics::cache::ServiceSummary> {
+    let mut out = Vec::new();
+    inner.managed.for_each(&mut |p| {
+        out.push(crate::diagnostics::cache::ServiceSummary {
+            managed_id: p.managedId.clone(),
+            workspace_id: p.workspaceId.clone(),
+            service_id: p.serviceId.clone(),
+            state: managed_state_label(&p.state),
+        });
+    });
+    out
+}
+
+/// Bounded per-managed-service output tails from the EXISTING LogRings
+/// (spec §16: reuse the capture the reader threads already maintain — no
+/// second stdout/stderr pipeline, no external-process scraping).
+#[allow(dead_code)]
+pub(crate) fn snapshot_managed_log_tails(
+    inner: &Inner,
+) -> Vec<(String, Vec<String>)> {
+    inner
+        .managed
+        .snapshot_with_logs()
+        .into_iter()
+        .map(|(p, lines)| {
+            (
+                p.managedId,
+                lines.into_iter().map(|l| l.line).collect::<Vec<String>>(),
+            )
+        })
+        .collect()
+}
+
+/// Short stable label for a managed-process state (diagnostics summary use).
+fn managed_state_label(state: &crate::workspace::rules::ManagedState) -> String {
+    match state {
+        crate::workspace::rules::ManagedState::Starting => "starting".into(),
+        crate::workspace::rules::ManagedState::Running => "running".into(),
+        crate::workspace::rules::ManagedState::StartFailed { .. } => "start-failed".into(),
+        crate::workspace::rules::ManagedState::Exited { .. } => "exited".into(),
+        crate::workspace::rules::ManagedState::Stopping => "stopping".into(),
+        crate::workspace::rules::ManagedState::Stopped => "stopped".into(),
+        crate::workspace::rules::ManagedState::StopTimeout => "stop-timeout".into(),
+        crate::workspace::rules::ManagedState::Degraded => "degraded".into(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Candidate derivation (backend-only — the trusted source of launch specs)
 // ---------------------------------------------------------------------------
 

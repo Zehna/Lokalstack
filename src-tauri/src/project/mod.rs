@@ -381,6 +381,25 @@ pub(crate) struct ProjectEngineState {
     pub(crate) cache: Arc<Mutex<ProjectCache>>,
 }
 
+/// Diagnostics-only read-only project snapshot (Phase 11C Task 5): pure read
+/// of the EXISTING resolution cache under its EXISTING lock. Poisoned lock
+/// yields an empty list rather than blocking or crashing. Id is the project
+/// root path (existing identity semantics); summaries carry no extra paths.
+/// Consumed by the bundle builder (Task 9/10).
+#[allow(dead_code)]
+pub(crate) fn cached_project_snapshot(
+    cache: &ProjectCache,
+) -> Vec<crate::diagnostics::cache::ProjectSummary> {
+    cache
+        .values()
+        .map(|p| crate::diagnostics::cache::ProjectSummary {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            kind: format!("{:?}", p.kind).to_lowercase(),
+        })
+        .collect()
+}
+
 /// Resolve projects for a whole discovery cycle against the shared cache.
 ///
 /// Returns the unique project list and per-PID links. With

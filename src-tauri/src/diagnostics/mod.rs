@@ -17,6 +17,7 @@
 //! start-up, subsystem failures, and panics a local breadcrumb trail without
 //! changing any subsystem behavior.
 
+pub(crate) mod cache;
 pub(crate) mod ids;
 pub(crate) mod incidents;
 pub(crate) mod paths;

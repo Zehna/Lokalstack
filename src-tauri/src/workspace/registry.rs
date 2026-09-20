@@ -309,6 +309,16 @@ impl ManagedProcessRegistry {
         self.lock().values().for_each(|e| f(&e.process));
     }
 
+    /// Diagnostics-only read-only snapshot (Phase 11C Task 5): every managed
+    /// process paired with the FULL contents of its bounded output ring.
+    /// Bounded by the ring capacity itself; no new capture pipeline.
+    pub(crate) fn snapshot_with_logs(&self) -> Vec<(ManagedProcess, Vec<crate::workspace::rules::LogLine>)> {
+        self.lock()
+            .values()
+            .map(|e| (e.process.clone(), e.logs.since(0)))
+            .collect()
+    }
+
     /// The most recent managed process for one workspace service (any
     /// state), for view assembly.
     pub(crate) fn latest_for_service(&self, workspace_id: &str, service_id: &str) -> Option<ManagedProcess> {
