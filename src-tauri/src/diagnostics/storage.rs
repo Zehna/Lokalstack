@@ -85,6 +85,68 @@ pub(crate) fn test_scratch_dir(name: &str) -> Option<PathBuf> {
     Some(dir)
 }
 
+/// Purge stale LocalStack-owned temp staging files (strict owned shape
+/// `tmp-<pid>-<16 lowercase hex>.part` inside `diagnostics/temp/` ONLY).
+/// Never touches foreign files, never recurses, never follows links.
+pub(crate) fn purge_stale_temp() {
+    purge_stale_temp_older_than(std::time::Duration::from_secs(3600));
+}
+
+/// Purge only temp files strictly older than `age` — a freshly-staged file
+/// belongs to a live writer (possibly a concurrent one), so it is never
+/// touched. Startup reconciliation uses the default 1-hour staleness bound.
+pub(crate) fn purge_stale_temp_older_than(age: std::time::Duration) {
+    let Some(dir) = super::paths::temp_dir() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !is_owned_temp_filename(&name) {
+            continue;
+        }
+        let path = dir.join(&name);
+        // Regular files only; never follow or remove anything else.
+        let ok = std::fs::symlink_metadata(&path)
+            .map(|m| m.is_file() && !m.file_type().is_symlink())
+            .unwrap_or(false);
+        if !ok {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .map(|d| d >= age)
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+fn is_owned_temp_filename(name: &str) -> bool {
+    // tmp-<pid>-<16 lowercase hex>.part
+    let Some(rest) = name.strip_prefix("tmp-") else {
+        return false;
+    };
+    let Some((pid_hex, suffix)) = rest.split_once('-') else {
+        return false;
+    };
+    let Some(hex) = suffix.strip_suffix(".part") else {
+        return false;
+    };
+    pid_hex.chars().all(|c| c.is_ascii_digit())
+        && hex.len() == 16
+        && hex
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+}
+
 /// Remove a scratch directory created by `test_scratch_dir` (test cleanup).
 #[cfg(test)]
 pub(crate) fn remove_scratch_dir(dir: &Path) {

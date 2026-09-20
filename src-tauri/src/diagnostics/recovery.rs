@@ -230,6 +230,7 @@ fn re_redact(v: &mut serde_json::Value) {
 /// Production dependency wiring (paths from Task 1; Task 10 replaces the
 /// write_bundle closure with the full registry transaction).
 pub(crate) fn production_deps(app_version: String, set_banner: Box<dyn Fn(RecoveryOutcome)>) -> Option<RecoveryDeps> {
+    let app_version_for_closure = app_version.clone();
     let marker_path = super::paths::emergency_dir()?.join("emergency.json");
     let bundles_dir = super::paths::diagnostics_dir()?.join("bundles");
     let failed_dir = super::paths::failed_dir()?;
@@ -246,17 +247,34 @@ pub(crate) fn production_deps(app_version: String, set_banner: Box<dyn Fn(Recove
             }
         })
     };
-    let bundles_dir_w = bundles_dir.clone();
-    let write_bundle: Box<dyn Fn(&[u8], &str) -> Result<String, String>> =
+    let registry = match super::store::BundleRegistry::new(
+        super::paths::diagnostics_dir()?.join("bundle-index.json"),
+        bundles_dir,
+    ) {
+        Some(r) => std::sync::Arc::new(r),
+        None => return None,
+    };
+    let write_bundle: Box<dyn Fn(&[u8], &str) -> Result<String, String>> = {
+        let registry = registry.clone();
+        let app_version = app_version_for_closure;
         Box::new(move |payload, trigger| {
-            // Interim closure until Task 10's registry transaction lands:
-            // encrypt + persist + derive the opaque ID.
-            let _ = trigger;
-            let id = super::bundle::new_bundle_id().ok_or("bundle id unavailable")?;
-            let dest = bundles_dir_w.join(format!("bundle-{id}.lsdiag"));
-            super::crypto::write_lsdiag(&dest, payload).map_err(|e| format!("crypto: {e:?}"))?;
-            Ok(id)
-        });
+            // Task 10 crash-safe transaction: encrypt + persist + index with
+            // tombstoned retention. `trigger` becomes the bundle meta.
+            let meta = super::store::MetaFields {
+                created_at_ms: super::now_unix_ms(),
+                trigger: trigger.to_string(),
+                subsystem: "crash-recovery".into(),
+                severity: "critical".into(),
+                fingerprint: String::new(),
+                app_version: app_version.clone(),
+            };
+            registry
+                .commit_bundle(payload, meta)
+                .map(|out| out.bundle_id)
+                .map_err(|e| format!("commit: {e:?}"))
+        })
+    };
+    let _ = &registry;
     Some(RecoveryDeps {
         record_bytes,
         record_exists,

@@ -28,6 +28,7 @@ pub(crate) mod paths;
 pub(crate) mod recovery;
 pub(crate) mod policy;
 pub(crate) mod storage;
+pub(crate) mod store;
 pub(crate) mod worker;
 
 use std::fs::{File, OpenOptions};
