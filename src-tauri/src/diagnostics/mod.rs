@@ -20,7 +20,9 @@
 pub(crate) mod ids;
 pub(crate) mod incidents;
 pub(crate) mod paths;
+pub(crate) mod policy;
 pub(crate) mod storage;
+pub(crate) mod worker;
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
