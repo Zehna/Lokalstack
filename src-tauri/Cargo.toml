@@ -49,6 +49,9 @@ url = "2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
+  # Diagnostics DPAPI bundle encryption (Phase 11C): CryptProtectData/
+  # CryptUnprotectData on crypt32.dll (current-user scope, spec §13).
+  "Win32_Security_Cryptography",
   "Win32_NetworkManagement_IpHelper",
   "Win32_Networking_WinSock",
   # Process intelligence (Phase 2): OpenProcess/GetProcessTimes/
