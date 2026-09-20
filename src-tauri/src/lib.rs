@@ -179,9 +179,14 @@ pub fn run() {
             Some(vec!["--startup"]),
         ))
         .setup(move |app| {
-            // Phase 10B (§X): local-only panic diagnostics, installed before
-            // any subsystem work. No telemetry, no network.
-            diagnostics::install_panic_hook();
+            // Phase 10B (§X) + Phase 11C (§6): local-only panic diagnostics,
+            // installed before any subsystem work. No telemetry, no network.
+            // The emergency destination is prepared ONCE here (normal runtime);
+            // if unavailable, the hook degrades to the redacted breadcrumb.
+            {
+                let prepared = diagnostics::emergency::prepare_once();
+                diagnostics::emergency::install(diagnostics::cache::global(), prepared.ok());
+            }
             diagnostics::info("startup", "LocalStack Control Center starting");
 
             // Phase 10C startup order (spec §AK): settings → reconciliation

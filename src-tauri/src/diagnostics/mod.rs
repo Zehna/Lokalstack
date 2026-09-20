@@ -19,6 +19,7 @@
 
 pub(crate) mod cache;
 pub(crate) mod ids;
+pub(crate) mod emergency;
 pub(crate) mod incidents;
 pub(crate) mod paths;
 pub(crate) mod policy;
@@ -156,6 +157,39 @@ fn log_file() -> &'static Option<Mutex<File>> {
     })
 }
 
+/// Try-lock-based error breadcrumb for the panic path: identical line format
+/// to `error()`, but never waits on the LOG_FILE mutex — busy/poisoned drops
+/// the line instead of blocking inside a panic hook.
+pub(crate) fn try_log_error_breadcrumb(message: &str) {
+    if LINES_WRITTEN.load(Ordering::Relaxed) >= MAX_SESSION_LINES {
+        return;
+    }
+    let Some(file_mutex) = log_file() else {
+        return;
+    };
+    let Ok(mut file) = file_mutex.try_lock() else {
+        return; // busy: drop rather than block inside the panic path
+    };
+    let line = format!(
+        "{} [error] panic: {}\n",
+        now_unix_ms(),
+        redact(message)
+    );
+    if file.write_all(line.as_bytes()).is_ok() {
+        LINES_WRITTEN.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Test seam: acquire the normal logger's file mutex so tests can prove the
+/// emergency writer never depends on it.
+#[cfg(test)]
+pub(crate) fn log_file_lock_for_test() -> Option<std::sync::MutexGuard<'static, File>> {
+    log_file().as_ref().map(|m| match m.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    })
+}
+
 /// Open (or create) the session log inside `dir`, enforcing the cross-session
 /// size cap: an oversized file from previous sessions is truncated before
 /// appending, so total log growth stays bounded forever. A file already
@@ -220,27 +254,6 @@ fn now_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
-}
-
-/// Install the panic hook (spec §X). Records panic message + location
-/// locally, then delegates to any previously installed hook. Never uploads
-/// anything and never attempts recovery — the process still unwinds normally.
-pub(crate) fn install_panic_hook() {
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let payload = info
-            .payload()
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "opaque panic payload".to_string());
-        let location = info
-            .location()
-            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-            .unwrap_or_else(|| "unknown location".to_string());
-        error("panic", &format!("{payload} at {location}"));
-        default_hook(info);
-    }));
 }
 
 #[cfg(test)]
