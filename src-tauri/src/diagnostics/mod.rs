@@ -22,6 +22,8 @@ pub(crate) mod cache;
 pub(crate) mod collectors;
 pub(crate) mod commands;
 pub(crate) mod notify;
+#[cfg(test)]
+mod audits;
 pub(crate) mod crypto;
 pub(crate) mod ids;
 pub(crate) mod emergency;
