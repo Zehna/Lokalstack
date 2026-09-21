@@ -81,7 +81,9 @@ impl SectionName {
 pub(crate) struct ManagedServiceOutput {
     pub(crate) service_id: String,
     pub(crate) lines: Vec<String>,
-    pub(crate) truncated: bool,
+    pub(crate) truncated_lines: bool,
+    pub(crate) bytes: u64,
+    pub(crate) truncated_bytes: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -211,7 +213,7 @@ pub(crate) fn apply_budget(mut model: BundleModel) -> BundleModel {
                             let removed = svc.lines.len() - keep;
                             if removed > 0 {
                                 svc.lines.drain(0..removed); // keep newest tail
-                                svc.truncated = true;
+                                svc.truncated_lines = true;
                             }
                         }
                     }
@@ -268,7 +270,9 @@ mod tests {
             content: SectionContent::ManagedOutput(vec![ManagedServiceOutput {
                 service_id: "svc-giant".into(),
                 lines: vec![giant_line; 51 * 1024],
-                truncated: false,
+                truncated_lines: false,
+                bytes: 0,
+                truncated_bytes: false,
             }]),
         });
         model
@@ -282,7 +286,9 @@ mod tests {
             content: SectionContent::ManagedOutput(vec![ManagedServiceOutput {
                 service_id: "svc-small".into(),
                 lines: vec![line; 49 * 1024],
-                truncated: false,
+                truncated_lines: false,
+                bytes: 0,
+                truncated_bytes: false,
             }]),
         });
         model

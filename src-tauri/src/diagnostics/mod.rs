@@ -19,6 +19,7 @@
 
 pub(crate) mod bundle;
 pub(crate) mod cache;
+pub(crate) mod collectors;
 pub(crate) mod crypto;
 pub(crate) mod ids;
 pub(crate) mod emergency;

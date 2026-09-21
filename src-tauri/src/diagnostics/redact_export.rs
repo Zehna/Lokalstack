@@ -157,7 +157,9 @@ fn scrub_managed(
         .map(|s| ManagedServiceOutput {
             service_id: scrub_string(&s.service_id, subs, kept),
             lines: s.lines.iter().map(|l| scrub_string(l, subs, kept)).collect(),
-            truncated: s.truncated,
+            truncated_lines: s.truncated_lines,
+            bytes: s.bytes,
+            truncated_bytes: s.truncated_bytes,
         })
         .collect()
 }
@@ -328,7 +330,9 @@ mod tests {
             .map(|(i, v)| ManagedServiceOutput {
                 service_id: format!("svc-{i}"),
                 lines: vec![v.clone()],
-                truncated: false,
+                truncated_lines: false,
+                bytes: v.len() as u64,
+                truncated_bytes: false,
             })
             .collect();
 
