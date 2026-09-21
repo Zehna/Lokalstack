@@ -16,6 +16,8 @@ import type { ViewId } from '@/types/domain'
 
 /** Placeholder view registry — one component per navigation entry. */
 const VIEWS: Record<ViewId, () => React.ReactElement> = {
+  // Placeholder until Task 17 lands the real DiagnosticsPage.
+  diagnostics: () => <></>,
   dashboard: DashboardPage,
   projects: ProjectsPage,
   services: ServicesPage,

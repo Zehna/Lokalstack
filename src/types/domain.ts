@@ -424,6 +424,7 @@ export type ViewId =
   | 'docker'
   | 'history'
   | 'settings'
+  | 'diagnostics'
 
 /* ------------------------------------------------------------------------
  * Port conflicts (Phase 7A) — evidence-based ownership + advisory options
@@ -825,4 +826,106 @@ export interface AppSettings {
 export interface SaveSettingsResult {
   settings: AppSettings
   correctedNote: string | null
+}
+
+
+/* ------------------------------------------------------------------------
+ * Diagnostics (Phase 11C) — wire DTOs mirroring the Rust commands module
+ * ---------------------------------------------------------------------- */
+
+/** Aggregate overview for the Diagnostics page header. */
+export interface DiagnosticsOverviewDto {
+  appVersion: string
+  overallHealth: string
+  lastDeepCheckMs: number | null
+  activeIncidents: number
+  bundleCount: number
+  storageBytes: number
+  pendingCrashRecovery: boolean
+  recoveryBanner: string | null
+}
+
+/** One deep-health probe result (status is always plain text, spec §30). */
+export interface HealthCheckResultDto {
+  id: string
+  subsystem: string
+  label: string
+  status: string
+  code: string
+  summary: string
+  detail: string | null
+  checkedAtMs: number
+  durationMs: number
+}
+
+/** One persistent incident record (metadata only, redacted summary). */
+export interface IncidentDto {
+  incidentId: string
+  subsystem: string
+  code: string
+  severity: string
+  operation: string
+  summary: string
+  firstSeenMs: number
+  lastSeenMs: number
+  occurrences: number
+  reviewState: string
+  bundleIds: string[]
+}
+
+/** Encrypted support-bundle metadata (never the payload). */
+export interface BundleMetaDto {
+  bundleId: string
+  createdAtMs: number
+  trigger: string
+  subsystem: string
+  severity: string
+  fingerprint: string
+  encryptedSizeBytes: number
+  integrity: string
+  reviewState: string
+  appVersion: string
+  schemaVersion: number
+}
+
+/** Metadata-first bundle detail; the encrypted payload stays backend-side. */
+export interface BundleDetailDto {
+  meta: BundleMetaDto
+  collectionErrors: string[]
+  truncated: boolean
+  truncatedSections: string[]
+  sectionNames: string[]
+  sectionSizes: number[]
+}
+
+/** Privacy profile for export (kebab-case over the wire). */
+export type ExportProfileDto = 'safe-share' | 'developer-detail' | 'full-forensics'
+
+/** Outcome of a trusted export: opaque capability ID + display-only name. */
+export interface ExportOutcomeDto {
+  exportId: string
+  fileName: string
+  profile: string
+}
+
+/** Safe-Share-only summary for Copy Diagnostic Summary (spec §22). */
+export interface SupportSummaryDto {
+  appVersion: string
+  windowsVersion: string
+  architecture: string
+  subsystem: string
+  healthState: string
+  incidentCode: string
+  fingerprint: string
+  occurrences: number
+  firstSeenMs: number
+  lastSeenMs: number
+  bundleId: string | null
+}
+
+/** Safe-Share GitHub issue draft; the issue URL is a backend fixed constant. */
+export interface GitHubIssueDraftDto {
+  title: string
+  body: string
+  issueUrl: string
 }
