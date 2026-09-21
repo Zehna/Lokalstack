@@ -15,6 +15,7 @@ import { IncidentsTab } from './components/IncidentsTab'
 import { BundlesTab } from './components/BundlesTab'
 import { NotificationBanner } from './components/NotificationBanner'
 import { ExportProfileDialog } from './components/ExportProfileDialog'
+import { GitHubIssueDialog } from './GitHubIssueDialog'
 import { FullForensicsConfirm } from './components/FullForensicsConfirm'
 import type { DiagnosticsTab } from './types'
 
@@ -42,6 +43,7 @@ export function DiagnosticsPage() {
   const [profile, setProfile] = useState<ExportProfileDto>('safe-share')
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
+  const [githubOpen, setGithubOpen] = useState(false)
 
   useEffect(() => {
     void loadOverview()
@@ -106,6 +108,15 @@ export function DiagnosticsPage() {
       )}
       {tab === 'bundles' && (
         <div role="tabpanel" id="panel-bundles" aria-labelledby="tab-bundles">
+        <div className="mb-2 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setGithubOpen(true)}
+            className="rounded border border-emerald-700 px-2 py-1 text-xs text-emerald-200 hover:bg-emerald-900/40"
+          >
+            Create GitHub Issue
+          </button>
+        </div>
         <BundlesTab
           bundles={bundles}
           onExport={(id) => {
@@ -122,6 +133,7 @@ export function DiagnosticsPage() {
         />
         </div>
       )}
+      {githubOpen && <GitHubIssueDialog bundleId={exportTarget ?? undefined} onClose={() => setGithubOpen(false)} />}
       {confirmOpen && (
         <FullForensicsConfirm
           onCancel={() => {
