@@ -130,21 +130,51 @@ fn scrub_string(s: &str, subs: &[(String, &'static str)], kept: &[String]) -> St
 }
 
 fn rewrite_json(v: &serde_json::Value, subs: &[(String, &'static str)], kept: &[String]) -> serde_json::Value {
+    rewrite_json_keyed(v, subs, kept, None)
+}
+
+/// Key-aware variant: a JSON field whose KEY is secret-shaped has its string
+/// value masked regardless of word shape (structural masking — the value
+/// alone may not trigger the word redactor, spec §10/§12).
+fn rewrite_json_keyed(
+    v: &serde_json::Value,
+    subs: &[(String, &'static str)],
+    kept: &[String],
+    parent_key: Option<&str>,
+) -> serde_json::Value {
     match v {
-        serde_json::Value::String(s) => serde_json::Value::String(scrub_string(s, subs, kept)),
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(|i| rewrite_json(i, subs, kept)).collect())
+        serde_json::Value::String(s) => {
+            if let Some(k) = parent_key {
+                if is_secret_shaped_key(k) {
+                    return serde_json::Value::String("[REDACTED]".to_string());
+                }
+            }
+            serde_json::Value::String(scrub_string(s, subs, kept))
         }
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items.iter().map(|i| rewrite_json_keyed(i, subs, kept, parent_key)).collect(),
+        ),
         serde_json::Value::Object(map) => {
             let mut out = serde_json::Map::with_capacity(map.len());
             for (k, val) in map {
-                // Keys are structural (field names), values are content.
-                out.insert(k.clone(), rewrite_json(val, subs, kept));
+                // Keys are structural; values are content — but a
+                // secret-shaped KEY masks its value entirely.
+                out.insert(k.clone(), rewrite_json_keyed(val, subs, kept, Some(k)));
             }
             serde_json::Value::Object(out)
         }
         other => other.clone(),
     }
+}
+
+/// Same hints as the Phase 10B word redactor (mod.rs SECRET_KEY_HINTS).
+fn is_secret_shaped_key(key: &str) -> bool {
+    const HINTS: &[&str] = &[
+        "token", "secret", "password", "passwd", "authorization", "cookie",
+        "api_key", "apikey", "api-key", "private_key", "credential",
+    ];
+    let lowered = key.to_ascii_lowercase();
+    HINTS.iter().any(|h| lowered.contains(h))
 }
 
 fn scrub_managed(

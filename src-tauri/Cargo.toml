@@ -99,6 +99,15 @@ windows-sys = { version = "0.60", features = [
   "Wdk_System_SystemServices",
 ] }
 
+# Tauri dialog/opener (Phase 11C Task 13) — RUST-SIDE APIs ONLY: the WebView
+# gains no plugin npm packages and no capability/permission grants; LocalStack
+# wraps them behind narrow diagnostics commands (plan §43-A).
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+# Support-bundle export ZIPs (Phase 11C Task 13). Deflate-only, no
+# unnecessary features; pin verified compatible with rust-version 1.82.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
 

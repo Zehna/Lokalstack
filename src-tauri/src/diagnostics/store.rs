@@ -486,6 +486,12 @@ impl BundleRegistry {
             Err(_) => Vec::new(),
         }
     }
+
+    /// Read-only accessor for the export pipeline (Task 13): trusted
+    /// bundles directory backing this registry.
+    pub(crate) fn bundles_dir(&self) -> &Path {
+        &self.bundles_dir
+    }
 }
 
 fn oldest_candidate_idx(bundles: &[BundleMeta]) -> Option<usize> {
@@ -790,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn retention_enforces_1GiB_target_with_overshoot_tolerance() {
+    fn retention_enforces_1_gib_target_with_overshoot_tolerance() {
         let dir = test_scratch_dir("store-1gib").expect("scratch");
         // Seed metas with sizes summing over 1 GiB (trusted index sizes; real
         // files are tiny — policy is enforced on meta, not on disk churn).
@@ -833,7 +839,7 @@ mod tests {
     }
 
     #[test]
-    fn crash_D_partial_deletion_before_tombstone_clear_is_safe() {
+    fn crash_d_partial_deletion_before_tombstone_clear_is_safe() {
         let dir = test_scratch_dir("store-partialdel").expect("scratch");
         seed_index_entry(&dir, &"d".repeat(24), 100, 1024);
         seed_index_entry(&dir, &"e".repeat(24), 200, 1024);
@@ -857,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn crash_C_deletion_failure_keeps_tombstone() {
+    fn crash_c_deletion_failure_keeps_tombstone() {
         let dir = test_scratch_dir("store-delfail").expect("scratch");
         seed_index_entry(&dir, &"f".repeat(24), 100, 1024);
         let mut index = read_index_or_empty(&dir.join("index.json"));
@@ -875,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn crash_E_malformed_or_foreign_tombstone_fails_closed() {
+    fn crash_e_malformed_or_foreign_tombstone_fails_closed() {
         let dir = test_scratch_dir("store-foreign").expect("scratch");
         // A foreign-shaped tombstone and a non-owned file in bundles/.
         let mut index = read_index_or_empty(&dir.join("index.json"));
@@ -911,7 +917,7 @@ mod tests {
         if !created {
             eprintln!("reparse/symlink creation not permitted on this host; containment asserted structurally");
         } else {
-            let reg = registry_in(&dir);
+            let _reg = registry_in(&dir);
             let refused = safe_delete_bundle_file(&bundles, "bundle-9999.lsdiag");
             assert!(refused.is_err(), "escape path refused");
             assert!(outside.join("precious.txt").exists(), "target untouched");

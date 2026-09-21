@@ -232,3 +232,33 @@ mod tests {
         out
     }
 }
+
+/// Durable atomic write for an exported ZIP destination: same-volume staging
+/// in LocalStack-owned diagnostics\temp, then rename over the user-chosen
+/// destination. Best-effort cleanup of the staging file on failure.
+pub(crate) fn write_export_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let Some(staging_dir) = super::paths::temp_dir() else {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no staging dir"));
+    };
+    let Some(name) = ids::random_hex(8) else {
+        return Err(std::io::Error::other("no randomness"));
+    };
+    let staging = staging_dir.join(format!("export-{name}.tmp"));
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&staging)?;
+    let mut file = std::io::BufWriter::new(file);
+    file.write_all(bytes)?;
+    file.flush()?;
+    let file = file.into_inner().map_err(|e| e.into_error())?;
+    file.sync_all()?;
+    drop(file); // close the handle before rename (Windows requirement)
+    match std::fs::rename(&staging, dest) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&staging); // best-effort cleanup
+            Err(e)
+        }
+    }
+}

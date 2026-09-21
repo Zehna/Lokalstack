@@ -15,7 +15,7 @@ pub(crate) const BUNDLE_LOGICAL_BUDGET_BYTES: u64 = 52_428_800;
 /// Logical bundle sections (spec §8). Entry names are fixed and derived from
 /// the section name only — never from bundle content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum SectionName {
     Manifest,
     Summary,
@@ -77,7 +77,7 @@ impl SectionName {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ManagedServiceOutput {
     pub(crate) service_id: String,
     pub(crate) lines: Vec<String>,
@@ -87,7 +87,7 @@ pub(crate) struct ManagedServiceOutput {
 }
 
 #[derive(Debug, Clone)]
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum SectionContent {
     Json(serde_json::Value),
     Text(String),
@@ -95,7 +95,7 @@ pub(crate) enum SectionContent {
 }
 
 #[derive(Debug, Clone)]
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct BundleSection {
     pub(crate) name: SectionName,
     pub(crate) content: SectionContent,
@@ -105,7 +105,7 @@ pub(crate) struct BundleSection {
 /// collection time. Partial bundles are valid — only packaging/encryption/
 /// durable-write failures fail final persistence (spec §8).
 #[derive(Debug, Clone)]
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct TypedCollectionError {
     pub(crate) section: SectionName,
     pub(crate) code: String,
@@ -114,14 +114,14 @@ pub(crate) struct TypedCollectionError {
 
 /// Never-silent truncation record (spec §14).
 #[derive(Debug, Clone, Default)]
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct TruncationState {
     pub(crate) truncated: bool,
     pub(crate) truncated_sections: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct BundleManifest {
     pub(crate) schema_version: u32,
     pub(crate) bundle_id: String,
@@ -142,7 +142,7 @@ pub(crate) struct BundleManifest {
 /// The typed bundle: manifest + sections. Exports transform this model
 /// structurally (redact_export) before serialization.
 #[derive(Debug, Clone)]
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct BundleModel {
     pub(crate) manifest: BundleManifest,
     pub(crate) sections: Vec<BundleSection>,
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn budget_is_exactly_50_MiB() {
+    fn budget_is_exactly_50_mi_b() {
         assert_eq!(BUNDLE_LOGICAL_BUDGET_BYTES, 52_428_800);
         let under = apply_budget(model_just_under_budget());
         assert!(

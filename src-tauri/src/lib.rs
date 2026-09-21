@@ -172,6 +172,8 @@ pub fn run() {
             diagnostics::info("single-instance", "second launch detected; focusing first instance");
             show_main_window(app);
         }))
+        .plugin(tauri_plugin_dialog::init()) // Rust-side save dialog only (Task 13)
+        .plugin(tauri_plugin_opener::init()) // Rust-side folder reveal only (Task 13)
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             // Extra args applied when launched at startup: marks the

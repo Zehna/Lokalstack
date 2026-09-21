@@ -23,6 +23,8 @@ pub(crate) mod collectors;
 pub(crate) mod crypto;
 pub(crate) mod ids;
 pub(crate) mod emergency;
+pub(crate) mod export;
+pub(crate) mod health;
 pub(crate) mod incidents;
 pub(crate) mod redact_export;
 pub(crate) mod paths;

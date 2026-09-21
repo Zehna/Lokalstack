@@ -14,7 +14,7 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::bundle::{ManagedServiceOutput, SectionContent};
+    use crate::diagnostics::bundle::SectionContent;
 
     fn service(id: &str, n_lines: usize, line_len: usize) -> (String, Vec<String>) {
         (
@@ -63,7 +63,7 @@ mod tests {
     }
 
     #[test]
-    fn combined_cap_5MiB_across_services() {
+    fn combined_cap_5_mib_across_services() {
         // 25 services x ~256 KiB = ~6.4 MiB > 5 MiB → deterministic trims.
         let services: Vec<(String, Vec<String>)> = (0..25)
             .map(|i| service(&format!("svc-{i:02}"), 4, 64 * 1024))
