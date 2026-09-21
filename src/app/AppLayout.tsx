@@ -10,13 +10,13 @@ import { ProjectsPage } from '@/features/projects/ProjectsPage'
 import { ServicesPage } from '@/features/services/ServicesPage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { WorkspacesPage } from '@/features/workspaces/WorkspacesPage'
+import { DiagnosticsPage } from '@/features/diagnostics/DiagnosticsPage'
 import { useAppStore } from '@/stores/appStore'
 import type { ViewId } from '@/types/domain'
 
 /** View registry — one component per navigation entry. */
 const VIEWS: Record<ViewId, () => React.ReactElement> = {
-  // Placeholder until Task 17 lands the real DiagnosticsPage.
-  diagnostics: () => <></>,
+  diagnostics: DiagnosticsPage,
   dashboard: DashboardPage,
   projects: ProjectsPage,
   services: ServicesPage,
