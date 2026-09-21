@@ -24,6 +24,8 @@ pub(crate) mod commands;
 pub(crate) mod notify;
 #[cfg(test)]
 mod audits;
+#[cfg(test)]
+mod live_windows_tests;
 pub(crate) mod crypto;
 pub(crate) mod ids;
 pub(crate) mod emergency;
