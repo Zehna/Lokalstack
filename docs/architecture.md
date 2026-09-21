@@ -884,6 +884,54 @@ shell without touching the service-control security model:
   focused) and exits; it never re-adopts managed processes, restarts
   polling stacks, or creates a second tray.
 
+## Diagnostics & supportability (Phase 11C)
+
+Module map (all under `src-tauri/src/diagnostics/` unless noted):
+
+- `mod.rs` — Phase 10B logging facade (info/warn/error), bounds, panic hook
+  delegation; unchanged call-site compatibility.
+- `incidents.rs` / `policy.rs` — typed incidents, deterministic
+  fingerprinting (subsystem+code+operation+severity), bounded history
+  (500 global / 100 per subsystem), severe 2-in-2-min + critical capture
+  policy with 10-minute cooldown.
+- `worker.rs` — single capture worker on `std::sync::mpsc::sync_channel(8)`;
+  producers never block (`try_send`), duplicates coalesce, per-job
+  `catch_unwind` isolation, cooperative shutdown.
+- `cache.rs` — non-blocking (try-lock) runtime snapshot cache that both the
+  panic hook and bundle builders read; never locks live registries.
+- `emergency.rs` — panic-path emergency record (≤512 KiB): pre-prepared path
+  only, no locks, no OS queries, no DPAPI/ZIP; degrade-to-omit on any miss.
+- `recovery.rs` — startup finalization of emergency records into full
+  encrypted bundles; ≤3 attempts, then `failed/` + UI banner.
+- `crypto.rs` — Windows DPAPI current-user (`CryptProtectData`/
+  `CryptUnprotectData`, checked length conversion, `LocalFree` ownership).
+- `store.rs` — bundle registry/index transaction: temp → finalize → atomic
+  index commit → best-effort eviction of tombstoned old bundles; tombstones
+  prevent crash-window resurrection; startup reconciliation of orphans and
+  stale temp files; all deletes are per-trusted-file with reparse refusal.
+- `bundle.rs` / `collectors.rs` — versioned bundle model and bounded
+  collectors (health, identity, inventories, LogRing managed-output tails).
+- `health.rs` — deep health probes (internal / integrations / Windows),
+  timeout-isolated, non-elevated, read-only.
+- `export.rs` / `redact_export.rs` — structural privacy transforms over the
+  typed bundle model (Safe Share / Developer Detail / Full Forensics), ZIP
+  export via trusted native save, one-shot reveal capability (8 entries,
+  10-minute TTL, restart-invalidated).
+- `commands.rs` — the narrow Tauri command surface (opaque IDs only) and the
+  production wiring of state + capture worker.
+- `notify.rs` — foreground/background notification decision (query failure
+  → conservative in-app banner).
+
+Frontend: `src/features/diagnostics/` (page + tabs + dialogs),
+`src/stores/diagnosticsStore.ts`, `src/services/native/diagnostics.ts` —
+components never call Tauri directly.
+
+Data flow: subsystem reports typed incident → policy decides capture →
+worker builds the bundle from cached snapshots → DPAPI encrypt → registry
+commit with tombstoned retention → user-initiated export applies the chosen
+privacy profile → Safe Share summary/URL for the fixed GitHub issue flow.
+No telemetry, no automatic upload, no network egress from diagnostics.
+
 ## See also
 
 - `docs/roadmap.md` for the phase plan.

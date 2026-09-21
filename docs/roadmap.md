@@ -517,6 +517,34 @@ inherited (no .env integration yet).
 - ✅ 10C — Settings, tray, Windows startup, close behavior, single instance.
 - ⬜ 10D — CI, packaging (NSIS/MSI), update strategy, user documentation.
 
+## Phase 11C — Diagnostics & Supportability ✅
+
+**Goal:** turn crashes and severe failures into reviewable, privacy-controlled
+local evidence — never a second control plane.
+
+- ✅ Dedicated Diagnostics page (overview, deep health, incident history,
+  support bundles) with accessibility parity.
+- ✅ Typed incident API with deterministic fingerprinting, 500/100 bounded
+  persistent history, and severe-2-in-2-min / critical capture policy with a
+  10-minute cooldown.
+- ✅ Bounded non-blocking capture queue (capacity 8, std sync_channel) with
+  per-job panic isolation.
+- ✅ Panic emergency record (≤512 KiB, non-blocking cached reads only) plus
+  startup crash recovery with DPAPI-encrypted full bundle and a 3-attempt cap.
+- ✅ DPAPI current-user encrypted `.lsdiag` support bundles, tombstoned
+  retention transaction (50 MiB / 1 GiB / 20 bundles), orphan + stale-temp
+  reconciliation.
+- ✅ Bounded managed-service stdout/stderr tails reused from existing LogRings
+  (100 lines / 256 KiB per service, 5 MiB combined), redacted.
+- ✅ Deep health engine (internal/integrations/Windows) — read-only,
+  non-elevated, timeout-isolated; device-serial collector Skipped by design.
+- ✅ Three export privacy profiles (Safe Share default, Developer Detail,
+  Full Forensics with per-export confirmation) applied as structural typed
+  transforms; hard secret invariant holds in every profile.
+- ✅ Context-aware notifications (foreground banner / background native toast,
+  Unknown → banner) with anti-spam; GitHub Safe Share issue workflow with a
+  backend-fixed URL — no PAT, no upload, no telemetry.
+
 ---
 
 ## Standing constraints (every phase)
