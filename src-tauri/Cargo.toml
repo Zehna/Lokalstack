@@ -104,6 +104,7 @@ windows-sys = { version = "0.60", features = [
 # wraps them behind narrow diagnostics commands (plan §43-A).
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
 # Support-bundle export ZIPs (Phase 11C Task 13). Deflate-only, no
 # unnecessary features; pin verified compatible with rust-version 1.82.
 zip = { version = "2", default-features = false, features = ["deflate"] }

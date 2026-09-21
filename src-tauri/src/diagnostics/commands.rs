@@ -201,11 +201,24 @@ pub(crate) fn recovery_banner_slot() -> &'static Arc<Mutex<Option<String>>> {
     SLOT.get_or_init(|| Arc::new(Mutex::new(None)))
 }
 
+/// Production app handle for the capture worker's native-notification path.
+/// Empty in tests (the injected closure is used there instead).
+static DIAGNOSTICS_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// Capture-notification banner slot: the overview merges it into
+/// `recovery_banner` so the frontend shows exactly one banner.
+static BANNER_SLOT: OnceLock<Arc<Mutex<Option<String>>>> = OnceLock::new();
+
+fn st_capture_banner() -> Option<&'static Arc<Mutex<Option<String>>>> {
+    Some(BANNER_SLOT.get_or_init(|| Arc::new(Mutex::new(None))))
+}
+
 impl DiagnosticsState {
     /// Production init (called once from the `lib.rs` setup path): loads the
     /// incident index, opens the bundle registry, and spawns the single
     /// capture worker with the real bundle builder. UI-less by construction.
     pub(crate) fn init(handle: &tauri::AppHandle) -> DiagnosticsState {
+        let _ = DIAGNOSTICS_APP_HANDLE.set(handle.clone());
         let app_version = env!("CARGO_PKG_VERSION").to_string();
 
         let incidents_path = super::paths::diagnostics_dir()
@@ -244,8 +257,29 @@ impl DiagnosticsState {
         let coalesce: Arc<Mutex<std::collections::HashSet<IncidentKey>>> =
             Arc::new(Mutex::new(std::collections::HashSet::new()));
         let (tx, rx) = std::sync::mpsc::sync_channel::<CaptureRequest>(super::worker::QUEUE_CAPACITY);
+        let win_handle = handle.clone();
+        let focus_of: Arc<dyn Fn() -> super::notify::Focus + Send + Sync> = Arc::new(move || {
+            // Any query failure / missing window → Unknown → conservative
+            // in-app banner fallback (never guesses Background).
+            let win = win_handle.get_webview_window("main");
+            super::notify::focus_of(win.as_ref())
+        });
+        let native_notify: Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync> =
+            Arc::new(|text: &str| {
+                use tauri_plugin_notification::NotificationExt;
+                let handle = DIAGNOSTICS_APP_HANDLE.get().ok_or("app handle unavailable")?;
+                handle
+                    .notification()
+                    .builder()
+                    .title("LocalStack Control Center")
+                    .body(text.to_string())
+                    .show()
+                    .map_err(|e| e.to_string())
+            });
         let build: Arc<dyn Fn(CaptureRequest) + Send + Sync> = {
             let coalesce = Arc::clone(&coalesce);
+            let focus_of = Arc::clone(&focus_of);
+            let native_notify = Arc::clone(&native_notify);
             Arc::new(move |req: CaptureRequest| {
                 let _ = &coalesce;
                 build_bundle_job(
@@ -257,6 +291,8 @@ impl DiagnosticsState {
                     &b_incidents,
                     &b_path,
                     &b_version,
+                    focus_of.as_ref(),
+                    native_notify.as_ref(),
                 );
             })
         };
@@ -392,6 +428,8 @@ fn build_bundle_job(
     incidents: &Mutex<IncidentIndex>,
     incidents_path: &std::path::Path,
     app_version: &str,
+    focus_of: &dyn Fn() -> super::notify::Focus,
+    native_notify: &dyn Fn(&str) -> Result<(), String>,
 ) {
     let CaptureRequest::Bundle { key, trigger, severity } = req;
     let now = unix_ms();
@@ -585,12 +623,26 @@ fn build_bundle_job(
                 let _ = idx.save_atomic(incidents_path);
             }
             super::info("diagnostics", "support bundle captured");
+            // One visible notification event per capture (spec §23). Decision
+            // input is read via injected closures so this stays testable and
+            // a notification failure can never affect bundle persistence.
+            let decision = super::notify::decide(focus_of(), false, false);
+            super::notify::dispatch(decision, native_notify);
+            if decision == super::notify::NotificationDecision::InAppBanner {
+                if let Some(slot) = st_capture_banner() {
+                    if let Ok(mut b) = slot.lock() {
+                        *b = Some(super::notify::CAPTURED_BANNER_TEXT.to_string());
+                    }
+                }
+            }
         }
         Err(_) => {
             super::error("diagnostics", "support bundle capture failed");
         }
     }
 }
+
+
 
 fn read_emergency_record() -> Option<Vec<u8>> {
     let dir = super::paths::emergency_dir()?;
@@ -671,7 +723,14 @@ fn overview_inner(st: &DiagnosticsState) -> DiagnosticsOverviewDto {
     let overall = worst_health_text(&health);
     let last_deep = health.iter().map(|r| r.checked_at_ms).max();
     let pending = pending_crash_recovery();
-    let banner = st.recovery_banner.lock().ok().and_then(|b| b.clone());
+    let recovery = st.recovery_banner.lock().ok().and_then(|b| b.clone());
+    // Recovery banner wins; otherwise surface a pending capture banner once
+    // (the frontend dedupes by message so it is not re-shown every poll).
+    let banner = recovery.or_else(|| {
+        st_capture_banner()
+            .and_then(|slot| slot.lock().ok())
+            .and_then(|b| b.clone())
+    });
     DiagnosticsOverviewDto {
         app_version: st.app_version.clone(),
         overall_health: overall,
