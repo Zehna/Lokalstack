@@ -85,6 +85,18 @@ windows-sys = { version = "0.60", features = [
   # incident/bundle/export IDs, and (Task 8) CryptProtectData/CryptUnprotectData
   # for DPAPI current-user bundle encryption. No new crypto crate.
   "Win32_Security_Cryptography",
+  # Deep-health collectors (Phase 11C Task 12), all read-only/non-elevated:
+  # GetSystemInfo/GlobalMemoryStatusEx (CPU/RAM/arch), ConvertSidToStringSidW
+  # (current-user SID), GetUserNameW, RegGetValueW (WebView2 BLBeacon,
+  # MachineGuid, display DriverDesc — no Dxgi exists in windows-sys 0.60),
+  # RtlGetVersion (Windows build).
+  "Win32_System_SystemInformation",
+  "Win32_System_WindowsProgramming",
+  # GetAdaptersAddresses (Task 12 network identity) is gated on Ndis.
+  "Win32_NetworkManagement_Ndis",
+  "Win32_System_Registry",
+  "Win32_Security_Authorization",
+  "Wdk_System_SystemServices",
 ] }
 
 [dev-dependencies]

@@ -5,6 +5,11 @@
 //! external-process output scraping: the collector is a pure function over
 //! the already-captured per-managed-service tails.
 //! RED tests first.
+// Health/identity collectors are wired into the Tauri command surface by
+// Task 14 (commands.rs); until then the dead-code allow keeps the
+// warning budget clean without weakening any test.
+#![allow(dead_code)]
+
 
 #[cfg(test)]
 mod tests {
@@ -223,4 +228,295 @@ pub(crate) fn collect_managed_output_from(
     tails: &[(String, Vec<String>)],
 ) -> SectionContent {
     collect_managed_output(tails)
+}
+
+// -- Task 12: machine identity + version collectors (§43-F) --------------------
+
+/// Identity field kinds mirrored from the Task 7 structural-privacy schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityKind {
+    Username,
+    Hostname,
+    LocalIP,
+    Mac,
+    Sid,
+    MachineGuid,
+    DeviceSerial,
+}
+
+/// One collected identity field. `value: None` = omitted (Skipped);
+/// `skipped_by_design` marks the explicit Phase 11C device-serial decision.
+#[derive(Debug, Clone)]
+pub struct IdentityField {
+    pub kind: IdentityKind,
+    pub value: Option<String>,
+    pub skipped_by_design: bool,
+}
+
+impl IdentityField {
+    fn present(kind: IdentityKind, value: String) -> Self {
+        Self { kind, value: Some(value), skipped_by_design: false }
+    }
+    fn omitted(kind: IdentityKind) -> Self {
+        Self { kind, value: None, skipped_by_design: false }
+    }
+}
+
+/// Narrow read-only registry string read (`REG_SZ`). None on any failure.
+pub(crate) fn registry_read_string(hkey: usize, subkey: &[u16], value: &[u16]) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, RRF_RT_REG_SZ, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+    };
+    let mut buf = [0u16; 512];
+    let mut len = (buf.len() as u32) * 2;
+    let base = match hkey {
+        0 => HKEY_LOCAL_MACHINE,
+        _ => HKEY_CURRENT_USER,
+    };
+    let rc = unsafe { RegGetValueW(base, subkey.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr() as *mut core::ffi::c_void, &mut len) };
+    if rc == 0 {
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..end]))
+    } else {
+        None
+    }
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// WebView2 runtime version from the documented BLBeacon registry value.
+pub(crate) fn collect_webview2_version() -> Result<Option<String>, String> {
+    Ok(registry_read_string(
+        1,
+        &wide(r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+        &wide("pv"),
+    )
+    .or_else(|| {
+        registry_read_string(1, &wide(r"Software\Microsoft\EdgeWebView\BLBeacon"), &wide("version"))
+    })
+    .or_else(|| {
+        registry_read_string(0, &wide(r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"), &wide("pv"))
+    }))
+}
+
+/// Windows build + UBR via read-only registry (CurrentVersion).
+pub(crate) fn collect_windows_version() -> Result<Option<(String, String)>, String> {
+    let build = registry_read_string(0, &wide(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"), &wide("CurrentBuildNumber"));
+    let ubr = registry_read_string(0, &wide(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"), &wide("UBR"));
+    match (build, ubr) {
+        (Some(b), Some(u)) => Ok(Some((b, u))),
+        (Some(b), None) => Ok(Some((b, "0".to_string()))),
+        _ => Ok(None),
+    }
+}
+
+/// Current-user SID via the exact verified chain (§43-F): OpenProcessToken →
+/// GetTokenInformation(TokenUser) → ConvertSidToStringSidW → LocalFree.
+/// Test seam allows injecting token-info failure.
+pub(crate) fn sid_field_with_seam(
+    token_info: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<Option<String>, String> {
+    let buf = token_info()?;
+    use windows_sys::Win32::Security::TOKEN_USER;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Foundation::LocalFree;
+    if buf.len() < std::mem::size_of::<TOKEN_USER>() {
+        return Err("token buffer too small".into());
+    }
+    let token_user = unsafe { &*(buf.as_ptr() as *const TOKEN_USER) };
+    let mut str_sid: windows_sys::core::PWSTR = std::ptr::null_mut();
+    let ok = unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut str_sid) };
+    if ok == 0 || str_sid.is_null() {
+        return Err("ConvertSidToStringSidW failed".into());
+    }
+    unsafe {
+        let mut len = 0usize;
+        while *str_sid.add(len) != 0 {
+            len += 1;
+        }
+        let s = String::from_utf16_lossy(std::slice::from_raw_parts(str_sid, len));
+        LocalFree(str_sid as _);
+        Ok(Some(s))
+    }
+}
+
+fn sid_via_token() -> Result<Option<String>, String> {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    let mut token: HANDLE = std::ptr::null_mut();
+    let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+    if opened == 0 {
+        return Err("OpenProcessToken failed".into());
+    }
+    // One bounded retry: query size, then allocate exactly that.
+    let mut needed: u32 = 0;
+    let mut scratch = [0u8; 128];
+    let mut ret: u32 = 0;
+    let got = unsafe { GetTokenInformation(token, TokenUser, scratch.as_mut_ptr() as *mut core::ffi::c_void, scratch.len() as u32, &mut needed) };
+    let buf = if got == 0 && needed > 0 && needed <= 4096 {
+        let mut v = vec![0u8; needed as usize];
+        let rc = unsafe { GetTokenInformation(token, TokenUser, v.as_mut_ptr() as *mut core::ffi::c_void, needed, &mut ret) };
+        if rc == 0 { Err("GetTokenInformation retry failed".into()) } else { Ok(v) }
+    } else if got != 0 {
+        Ok(scratch[..ret as usize].to_vec())
+    } else {
+        Err("GetTokenInformation failed".into())
+    };
+    unsafe { CloseHandle(token) };
+    sid_field_with_seam(|| buf)
+}
+
+/// Full machine-identity field set (§43-F). Every field maps failure to an
+/// omitted value — never a crash. DeviceSerial is Skipped BY DESIGN in
+/// Phase 11C (no narrow repository API; structural schema retained).
+pub fn collect_system_identity() -> Vec<IdentityField> {
+    let mut out = Vec::new();
+
+    // Username — GetUserNameW (Win32_System_WindowsProgramming).
+    out.push(match username() {
+        Ok(Some(u)) => IdentityField::present(IdentityKind::Username, u),
+        _ => IdentityField::omitted(IdentityKind::Username),
+    });
+
+    // Hostname — GetComputerNameW.
+    out.push(match hostname() {
+        Ok(Some(h)) => IdentityField::present(IdentityKind::Hostname, h),
+        _ => IdentityField::omitted(IdentityKind::Hostname),
+    });
+
+    // SID — exact §43-F chain.
+    out.push(match sid_via_token() {
+        Ok(Some(s)) => IdentityField::present(IdentityKind::Sid, s),
+        _ => IdentityField::omitted(IdentityKind::Sid),
+    });
+
+    // MachineGuid — read-only HKLM registry.
+    out.push(match registry_read_string(
+        0,
+        &wide(r"SOFTWARE\Microsoft\Cryptography"),
+        &wide("MachineGuid"),
+    ) {
+        Some(g) => IdentityField::present(IdentityKind::MachineGuid, g),
+        None => IdentityField::omitted(IdentityKind::MachineGuid),
+    });
+
+    // Local IP + MAC — GetAdaptersAddresses (IpHelper already enabled).
+    let (ips, macs) = network_identity();
+    out.push(match ips.first() {
+        Some(ip) => IdentityField::present(IdentityKind::LocalIP, ip.clone()),
+        None => IdentityField::omitted(IdentityKind::LocalIP),
+    });
+    out.push(match macs.first() {
+        Some(m) => IdentityField::present(IdentityKind::Mac, m.clone()),
+        None => IdentityField::omitted(IdentityKind::Mac),
+    });
+
+    // Device/disk serial — EXPLICIT Phase 11C Skipped/Unsupported decision.
+    out.push(IdentityField {
+        kind: IdentityKind::DeviceSerial,
+        value: None,
+        skipped_by_design: true,
+    });
+
+    out
+}
+fn username() -> Result<Option<String>, String> {
+    use windows_sys::Win32::System::WindowsProgramming::GetUserNameW;
+    let mut buf = [0u16; 257];
+    let mut len = buf.len() as u32;
+    let ok = unsafe { GetUserNameW(buf.as_mut_ptr(), &mut len) };
+    if ok == 0 || len <= 1 {
+        return Err("GetUserNameW failed".into());
+    }
+    Ok(Some(String::from_utf16_lossy(&buf[..(len - 1) as usize])))
+}
+
+fn hostname() -> Result<Option<String>, String> {
+    use windows_sys::Win32::System::WindowsProgramming::GetComputerNameW;
+    let mut buf = [0u16; 261];
+    let mut len = buf.len() as u32;
+    let ok = unsafe { GetComputerNameW(buf.as_mut_ptr(), &mut len) };
+    if ok == 0 || len == 0 {
+        return Err("GetComputerNameW failed".into());
+    }
+    Ok(Some(String::from_utf16_lossy(&buf[..len as usize])))
+}
+
+/// Local/private IPv4 addresses + MACs from GetAdaptersAddresses. Read-only.
+fn network_identity() -> (Vec<String>, Vec<String>) {
+    use windows_sys::Win32::NetworkManagement::IpHelper::GetAdaptersAddresses;
+    use windows_sys::Win32::NetworkManagement::IpHelper::GAA_FLAG_SKIP_ANYCAST;
+    use windows_sys::Win32::NetworkManagement::IpHelper::GAA_FLAG_SKIP_MULTICAST;
+    use windows_sys::Win32::Networking::WinSock::AF_INET;
+
+    const ERROR_BUFFER_OVERFLOW: u32 = 111;
+    let mut size: u32 = 16 * 1024;
+    let mut buf = vec![0u8; size as usize];
+    for _ in 0..3 {
+        let rc = unsafe {
+            GetAdaptersAddresses(
+                AF_INET as u32,
+                GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr() as *mut _,
+                &mut size,
+            )
+        };
+        if rc == 0 {
+            break;
+        }
+        if rc == ERROR_BUFFER_OVERFLOW && size <= 1024 * 1024 {
+            buf = vec![0u8; size as usize];
+        } else {
+            return (Vec::new(), Vec::new());
+        }
+    }
+
+    let mut ips = Vec::new();
+    let mut macs = Vec::new();
+    unsafe {
+        let mut adapter = buf.as_ptr()
+            as *const windows_sys::Win32::NetworkManagement::IpHelper::IP_ADAPTER_ADDRESSES_LH;
+        while !adapter.is_null() {
+            let a = &*adapter;
+            if a.OperStatus == 1 && a.PhysicalAddressLength > 0 {
+                let mac = a
+                    .PhysicalAddress
+                    .iter()
+                    .take(a.PhysicalAddressLength as usize)
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(":");
+                macs.push(mac);
+            }
+            // First unicast IPv4 of each live adapter.
+            let mut uni = a.FirstUnicastAddress;
+            while !uni.is_null() {
+                let sa = (*uni).Address.lpSockaddr;
+                if !sa.is_null() && (*sa).sa_family == AF_INET {
+                    let sin =
+                        &*(sa as *const windows_sys::Win32::Networking::WinSock::SOCKADDR_IN);
+                    let o = sin.sin_addr.S_un.S_un_b;
+                    ips.push(format!("{}.{}.{}.{}", o.s_b1, o.s_b2, o.s_b3, o.s_b4));
+                    break;
+                }
+                uni = (*uni).Next;
+            }
+            adapter = a.Next;
+        }
+    }
+    (ips, macs)
+}
+
+/// Human-readable CPU description via read-only registry
+/// (HARDWARE\DESCRIPTION\System\CentralProcessor\0\ProcessorNameString).
+pub(crate) fn collect_cpu_description() -> Option<String> {
+    registry_read_string(
+        0,
+        &wide(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"),
+        &wide("ProcessorNameString"),
+    )
 }
