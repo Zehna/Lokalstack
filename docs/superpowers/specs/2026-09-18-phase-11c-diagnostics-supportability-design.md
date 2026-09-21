@@ -1,6 +1,6 @@
 # Phase 11C — Diagnostics & Supportability — Design Specification
 
-**Status:** Review candidate — awaiting approval for implementation planning (spec-only; no code in this phase).
+**Status:** Implemented (Phase 11C gates passed).
 **Date:** 2026-09-18
 **Baseline:** main `c714f9c48d694bb9a33014b5420da1b7542c9ce5` (v1.0.1 candidate)
 **Predecessor:** Phase 10B local diagnostics (`docs/architecture.md` §"Local diagnostics (Phase 10B)"), Phase 10D bounds (`docs/phase-10d.md`)
