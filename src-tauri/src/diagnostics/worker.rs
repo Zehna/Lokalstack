@@ -68,6 +68,17 @@ fn key_of(req: &CaptureRequest) -> IncidentKey {
 }
 
 impl CaptureWorker {
+    /// Build an enqueue handle sharing the given coalescing set/shutdown
+    /// flag with a spawned worker (production wiring, Task 14).
+    #[allow(dead_code)] // production wiring in diagnostics/commands.rs
+    pub(crate) fn new(
+        tx: mpsc::SyncSender<CaptureRequest>,
+        coalesce: Arc<Mutex<HashSet<IncidentKey>>>,
+        shutdown: Arc<AtomicBool>,
+    ) -> Self {
+        Self { tx, coalesce, shutdown }
+    }
+
     /// Spawn the single capture worker. `build` is injected by later tasks
     /// (real bundle builder); tests inject counting/failing fakes.
     #[allow(dead_code)] // wired into the reporting path in Task 6/9

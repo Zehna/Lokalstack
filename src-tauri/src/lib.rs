@@ -210,8 +210,26 @@ pub fn run() {
                     if matches!(outcome.banner, diagnostics::recovery::RecoveryBanner::Recovered) {
                         diagnostics::info("recovery", "previous crash recovered into bundle");
                     }
+                    // Surface the recovery outcome to the UI via the
+                    // diagnostics state (Task 14 command `get_diagnostics_overview`).
+                    if let Ok(mut slot) = diagnostics::commands::recovery_banner_slot().lock() {
+                        *slot = match outcome.banner {
+                            diagnostics::recovery::RecoveryBanner::Recovered => {
+                                Some("A previous crash was recovered into a support bundle.".into())
+                            }
+                            diagnostics::recovery::RecoveryBanner::RecoveryFailed => {
+                                Some("Diagnostics recovery failed after repeated attempts.".into())
+                            }
+                            _ => None,
+                        };
+                    }
                 }
             }
+            // Phase 11C Task 14: diagnostics application state (incident
+            // index, bundle registry, capture worker, export capabilities).
+            // Init AFTER recovery so the capture worker sees post-recovery
+            // storage state.
+            app.manage(diagnostics::commands::DiagnosticsState::init(app.handle()));
             diagnostics::info("startup", "LocalStack Control Center starting");
 
             // Phase 10C startup order (spec §AK): settings → reconciliation
@@ -289,7 +307,20 @@ pub fn run() {
             app_commands::save_app_settings,
             app_commands::reset_app_settings,
             app_commands::set_run_at_startup,
-            app_commands::get_startup_registered
+            app_commands::get_startup_registered,
+            diagnostics::commands::get_diagnostics_overview,
+            diagnostics::commands::run_deep_health_checks,
+            diagnostics::commands::list_incidents,
+            diagnostics::commands::mark_incident_reviewed,
+            diagnostics::commands::list_support_bundles,
+            diagnostics::commands::get_support_bundle_detail,
+            diagnostics::commands::export_support_bundle,
+            diagnostics::commands::delete_support_bundle,
+            diagnostics::commands::open_diagnostics_folder,
+            diagnostics::commands::get_support_summary,
+            diagnostics::commands::prepare_localstack_github_issue,
+            diagnostics::commands::update_diagnostics_context,
+            diagnostics::commands::reveal_export_result
         ])
         .on_window_event(|window, event| {
             // Close behavior (spec §P, §Q): window lifecycle is independent
