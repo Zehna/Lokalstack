@@ -172,6 +172,9 @@ pub fn run() {
             diagnostics::info("single-instance", "second launch detected; focusing first instance");
             show_main_window(app);
         }))
+        .plugin(tauri_plugin_dialog::init()) // Rust-side save dialog only (Task 13)
+        .plugin(tauri_plugin_opener::init()) // Rust-side folder reveal only (Task 13)
+        .plugin(tauri_plugin_notification::init()) // Rust-side capture toast only (Task 18)
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             // Extra args applied when launched at startup: marks the
@@ -179,9 +182,55 @@ pub fn run() {
             Some(vec!["--startup"]),
         ))
         .setup(move |app| {
-            // Phase 10B (§X): local-only panic diagnostics, installed before
-            // any subsystem work. No telemetry, no network.
-            diagnostics::install_panic_hook();
+            // Phase 10B (§X) + Phase 11C (§6): local-only panic diagnostics,
+            // installed before any subsystem work. No telemetry, no network.
+            // The emergency destination is prepared ONCE here (normal runtime);
+            // if unavailable, the hook degrades to the redacted breadcrumb.
+            {
+                let prepared = diagnostics::emergency::prepare_once();
+                diagnostics::emergency::install(diagnostics::cache::global(), prepared.ok());
+            }
+            // Phase 11C (§7): finalize any pending crash record BEFORE the
+            // window is shown. Never blocks startup; outcome banner is
+            // surfaced to the frontend via the diagnostics commands (Task 14).
+            {
+                let app_version = env!("CARGO_PKG_VERSION").to_string();
+                if let Some(deps) = diagnostics::recovery::production_deps(
+                    app_version,
+                    Box::new(|outcome| {
+                        if let Some(id) = &outcome.recovered_bundle_id {
+                            diagnostics::info(
+                                "recovery",
+                                &format!("crash record finalized into bundle (pending UI notice)"),
+                            );
+                            let _ = id;
+                        }
+                    }),
+                ) {
+                    let outcome = diagnostics::recovery::finalize_pending(deps);
+                    if matches!(outcome.banner, diagnostics::recovery::RecoveryBanner::Recovered) {
+                        diagnostics::info("recovery", "previous crash recovered into bundle");
+                    }
+                    // Surface the recovery outcome to the UI via the
+                    // diagnostics state (Task 14 command `get_diagnostics_overview`).
+                    if let Ok(mut slot) = diagnostics::commands::recovery_banner_slot().lock() {
+                        *slot = match outcome.banner {
+                            diagnostics::recovery::RecoveryBanner::Recovered => {
+                                Some("A previous crash was recovered into a support bundle.".into())
+                            }
+                            diagnostics::recovery::RecoveryBanner::RecoveryFailed => {
+                                Some("Diagnostics recovery failed after repeated attempts.".into())
+                            }
+                            _ => None,
+                        };
+                    }
+                }
+            }
+            // Phase 11C Task 14: diagnostics application state (incident
+            // index, bundle registry, capture worker, export capabilities).
+            // Init AFTER recovery so the capture worker sees post-recovery
+            // storage state.
+            app.manage(diagnostics::commands::DiagnosticsState::init(app.handle()));
             diagnostics::info("startup", "LocalStack Control Center starting");
 
             // Phase 10C startup order (spec §AK): settings → reconciliation
@@ -259,7 +308,20 @@ pub fn run() {
             app_commands::save_app_settings,
             app_commands::reset_app_settings,
             app_commands::set_run_at_startup,
-            app_commands::get_startup_registered
+            app_commands::get_startup_registered,
+            diagnostics::commands::get_diagnostics_overview,
+            diagnostics::commands::run_deep_health_checks,
+            diagnostics::commands::list_incidents,
+            diagnostics::commands::mark_incident_reviewed,
+            diagnostics::commands::list_support_bundles,
+            diagnostics::commands::get_support_bundle_detail,
+            diagnostics::commands::export_support_bundle,
+            diagnostics::commands::delete_support_bundle,
+            diagnostics::commands::open_diagnostics_folder,
+            diagnostics::commands::get_support_summary,
+            diagnostics::commands::prepare_localstack_github_issue,
+            diagnostics::commands::update_diagnostics_context,
+            diagnostics::commands::reveal_export_result
         ])
         .on_window_event(|window, event| {
             // Close behavior (spec §P, §Q): window lifecycle is independent

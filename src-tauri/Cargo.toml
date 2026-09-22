@@ -49,6 +49,9 @@ url = "2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
+  # Diagnostics DPAPI bundle encryption (Phase 11C): CryptProtectData/
+  # CryptUnprotectData on crypt32.dll (current-user scope, spec §13).
+  "Win32_Security_Cryptography",
   "Win32_NetworkManagement_IpHelper",
   "Win32_Networking_WinSock",
   # Process intelligence (Phase 2): OpenProcess/GetProcessTimes/
@@ -78,7 +81,33 @@ windows-sys = { version = "0.60", features = [
   # Local diagnostics (Phase 10B): SHGetKnownFolderPath/FOLDERID_LocalAppData
   # for the log file location. Diagnostics are local-only — no telemetry.
   "Win32_System_Com",
+  # Diagnostics (Phase 11C): BCryptGenRandom system-preferred RNG for opaque
+  # incident/bundle/export IDs, and (Task 8) CryptProtectData/CryptUnprotectData
+  # for DPAPI current-user bundle encryption. No new crypto crate.
+  "Win32_Security_Cryptography",
+  # Deep-health collectors (Phase 11C Task 12), all read-only/non-elevated:
+  # GetSystemInfo/GlobalMemoryStatusEx (CPU/RAM/arch), ConvertSidToStringSidW
+  # (current-user SID), GetUserNameW, RegGetValueW (WebView2 BLBeacon,
+  # MachineGuid, display DriverDesc — no Dxgi exists in windows-sys 0.60),
+  # RtlGetVersion (Windows build).
+  "Win32_System_SystemInformation",
+  "Win32_System_WindowsProgramming",
+  # GetAdaptersAddresses (Task 12 network identity) is gated on Ndis.
+  "Win32_NetworkManagement_Ndis",
+  "Win32_System_Registry",
+  "Win32_Security_Authorization",
+  "Wdk_System_SystemServices",
 ] }
+
+# Tauri dialog/opener (Phase 11C Task 13) — RUST-SIDE APIs ONLY: the WebView
+# gains no plugin npm packages and no capability/permission grants; LocalStack
+# wraps them behind narrow diagnostics commands (plan §43-A).
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
+# Support-bundle export ZIPs (Phase 11C Task 13). Deflate-only, no
+# unnecessary features; pin verified compatible with rust-version 1.82.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

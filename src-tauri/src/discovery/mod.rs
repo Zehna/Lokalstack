@@ -54,6 +54,33 @@ pub(crate) struct PortListenersResponse {
     pub durationMs: u64,
 }
 
+/// Diagnostics-only listener snapshot (Phase 11C Task 5).
+///
+/// Repository ruling: the discovery engine keeps NO persistent listener cache
+/// (the cross-cycle `ProcessEngineState.cache` holds only CPU baselines), so
+/// the owner accessor reuses the engine's own bounded, read-only,
+/// non-elevated `GetExtendedTcpTable` read. This is the same Win32 call the
+/// polling refresh already performs — not a new scan mechanism. Consumed by
+/// the bundle builder (Task 9/10).
+#[allow(dead_code)]
+pub(crate) fn cached_listener_snapshot() -> Vec<crate::diagnostics::cache::ListenerSummary> {
+    match windows::enumerate_tcp_listeners() {
+        Ok(listeners) => listeners
+            .iter()
+            .map(|l| crate::diagnostics::cache::ListenerSummary {
+                port: l.port,
+                ip_version: match l.ipVersion {
+                    crate::discovery::ports::IpVersion::V4 => 4,
+                    crate::discovery::ports::IpVersion::V6 => 6,
+                },
+                pid: l.pid,
+                state: format!("{:?}", l.state).to_lowercase(),
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// LIVE-SYSTEM TEST (#[ignore]d so normal `cargo test` stays hermetic).

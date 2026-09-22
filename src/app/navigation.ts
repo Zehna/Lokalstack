@@ -1,7 +1,7 @@
 import type { ViewId } from '@/types/domain'
 
 /** Which feature a view belongs to — used for file placement, not logic. */
-export type FeatureGroup = 'dashboard' | 'projects' | 'services' | 'ports' | 'workspaces' | 'ai-services' | 'docker' | 'history' | 'settings'
+export type FeatureGroup = 'dashboard' | 'projects' | 'services' | 'ports' | 'workspaces' | 'ai-services' | 'docker' | 'history' | 'settings' | 'diagnostics'
 
 export interface NavItem {
   id: ViewId
@@ -23,4 +23,5 @@ export const NAV_ITEMS: NavItem[] = [
   { id: 'docker', label: 'Docker', feature: 'docker' },
   { id: 'history', label: 'History', feature: 'history' },
   { id: 'settings', label: 'Settings', feature: 'settings' },
+  { id: 'diagnostics', label: 'Diagnostics', feature: 'diagnostics' },
 ]

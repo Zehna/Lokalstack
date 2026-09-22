@@ -17,9 +17,31 @@
 //! start-up, subsystem failures, and panics a local breadcrumb trail without
 //! changing any subsystem behavior.
 
+pub(crate) mod bundle;
+pub(crate) mod cache;
+pub(crate) mod collectors;
+pub(crate) mod commands;
+pub(crate) mod notify;
+#[cfg(test)]
+mod audits;
+#[cfg(test)]
+mod live_windows_tests;
+pub(crate) mod crypto;
+pub(crate) mod ids;
+pub(crate) mod emergency;
+pub(crate) mod export;
+pub(crate) mod health;
+pub(crate) mod incidents;
+pub(crate) mod redact_export;
+pub(crate) mod paths;
+pub(crate) mod recovery;
+pub(crate) mod policy;
+pub(crate) mod storage;
+pub(crate) mod store;
+pub(crate) mod worker;
+
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -36,6 +58,15 @@ const MAX_FILE_BYTES: u64 = 256 * 1024;
 
 static LINES_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 static LOG_FILE: OnceLock<Option<Mutex<File>>> = OnceLock::new();
+
+/// Canonical `Path`-typed accessor over [`paths::local_app_data_dir`].
+/// The `OnceLock` in `paths` memoizes the resolved directory for the
+/// program lifetime, so re-borrowing it as `&'static Path` is sound.
+/// (Consumed by the snapshot/cache tasks onward.)
+#[allow(dead_code)]
+pub(crate) fn app_data_path() -> Option<&'static std::path::Path> {
+    paths::LOCAL_APP_DATA.get().and_then(|p| p.as_deref())
+}
 
 /// Keys whose values must never reach the log (case-insensitive substring
 /// match on the key portion of `key=value` / `key: value` tokens).
@@ -65,6 +96,43 @@ fn is_secret_keyed(word: &str) -> bool {
     })
 }
 
+/// Mask PEM private-key blocks (`-----BEGIN ... PRIVATE KEY-----` through
+/// `-----END ... PRIVATE KEY-----`) before word-level redaction. An
+/// unterminated BEGIN block is redacted to the end of the text (fail-safe).
+fn strip_pem_private_key_blocks(message: &str) -> String {
+    const BEGIN: &str = "-----BEGIN";
+    const END: &str = "-----END";
+    if !message.contains(BEGIN) {
+        return message.to_string();
+    }
+    let mut out = message.to_string();
+    let mut search_from = 0usize;
+    while let Some(rel) = out[search_from..].find(BEGIN) {
+        let start = search_from + rel;
+        // Confirm the header is a private-key block.
+        let header_end = (out[start..].find('\n')).unwrap_or(out.len() - start) + start;
+        if !out[start..header_end.min(out.len())].contains("PRIVATE KEY") {
+            // Not private-key material (e.g. a public certificate): leave it
+            // and keep scanning after this marker.
+            search_from = start + BEGIN.len();
+            continue;
+        }
+        let Some(end_rel) = out[start..].find(END) else {
+            // Unterminated private-key block: redact to end of text.
+            out.replace_range(start.., "[REDACTED-PRIVATE-KEY]");
+            break;
+        };
+        let end = start + end_rel;
+        let end_line_stop = out[end..]
+            .find('\n')
+            .map(|i| end + i)
+            .unwrap_or(out.len());
+        out.replace_range(start..end_line_stop, "[REDACTED-PRIVATE-KEY]");
+        search_from = start;
+    }
+    out
+}
+
 /// Mask secret-shaped tokens in `message`. Handled forms (spec §4):
 ///
 /// - `key=value` / `key:value` — key-bearing token masked whole;
@@ -76,6 +144,7 @@ fn is_secret_keyed(word: &str) -> bool {
 ///
 /// Deterministic, single-pass, no secret-detection framework.
 pub(crate) fn redact(message: &str) -> String {
+    let message = strip_pem_private_key_blocks(message);
     let mut out = String::with_capacity(message.len());
     let mut words = message.split_whitespace().peekable();
     while let Some(word) = words.next() {
@@ -84,6 +153,20 @@ pub(crate) fn redact(message: &str) -> String {
             let split_at = word.find(['=', ':']).expect("is_secret_keyed proved a separator");
             out.push_str(&word[..=split_at]);
             out.push_str("[REDACTED]");
+            // Header form ("Cookie: session=x"): the header VALUE that
+            // follows is masked too. If that value is a scheme ("Bearer"),
+            // the credential after the scheme is masked as well.
+            if word.ends_with(':') {
+                if let Some(next) = words.next() {
+                    let was_bearer = next.eq_ignore_ascii_case("bearer");
+                    out.push_str(" [REDACTED]");
+                    if was_bearer && words.next().is_some() {
+                        out.push_str(" [REDACTED]");
+                    }
+                }
+                out.push(' ');
+                continue;
+            }
             // Scheme may sit in the NEXT word ("Authorization: Bearer x") or
             // inside the masked token itself ("Authorization=Bearer x") —
             // either way the value token that follows is masked too.
@@ -140,6 +223,39 @@ fn log_file() -> &'static Option<Mutex<File>> {
     })
 }
 
+/// Try-lock-based error breadcrumb for the panic path: identical line format
+/// to `error()`, but never waits on the LOG_FILE mutex — busy/poisoned drops
+/// the line instead of blocking inside a panic hook.
+pub(crate) fn try_log_error_breadcrumb(message: &str) {
+    if LINES_WRITTEN.load(Ordering::Relaxed) >= MAX_SESSION_LINES {
+        return;
+    }
+    let Some(file_mutex) = log_file() else {
+        return;
+    };
+    let Ok(mut file) = file_mutex.try_lock() else {
+        return; // busy: drop rather than block inside the panic path
+    };
+    let line = format!(
+        "{} [error] panic: {}\n",
+        now_unix_ms(),
+        redact(message)
+    );
+    if file.write_all(line.as_bytes()).is_ok() {
+        LINES_WRITTEN.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Test seam: acquire the normal logger's file mutex so tests can prove the
+/// emergency writer never depends on it.
+#[cfg(test)]
+pub(crate) fn log_file_lock_for_test() -> Option<std::sync::MutexGuard<'static, File>> {
+    log_file().as_ref().map(|m| match m.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    })
+}
+
 /// Open (or create) the session log inside `dir`, enforcing the cross-session
 /// size cap: an oversized file from previous sessions is truncated before
 /// appending, so total log growth stays bounded forever. A file already
@@ -169,49 +285,10 @@ pub(crate) fn warn(subsystem: &str, message: &str) {
 /// `FOLDERID_LocalAppData`, creating it on demand. Shared by diagnostics
 /// (log file) and settings (settings.json) so both live in the same
 /// LocalStack-owned location — never inside a source tree (spec §E).
-pub(crate) fn local_app_data_dir() -> Option<PathBuf> {
-    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DIR.get_or_init(|| {
-        #[cfg(windows)]
-        {
-            use windows_sys::Win32::UI::Shell::{
-                SHGetKnownFolderPath, FOLDERID_LocalAppData, KF_FLAG_DEFAULT,
-            };
-            unsafe {
-                let mut raw: *mut u16 = std::ptr::null_mut();
-                let hr = SHGetKnownFolderPath(
-                    &FOLDERID_LocalAppData,
-                    KF_FLAG_DEFAULT as u32,
-                    std::ptr::null_mut(),
-                    &mut raw,
-                );
-                if hr != 0 || raw.is_null() {
-                    return None;
-                }
-                let len = {
-                    let mut l = 0usize;
-                    while *raw.add(l) != 0 {
-                        l += 1;
-                    }
-                    l
-                };
-                let slice = std::slice::from_raw_parts(raw, len);
-                let path = String::from_utf16_lossy(slice);
-                windows_sys::Win32::System::Com::CoTaskMemFree(raw.cast());
-                let dir = PathBuf::from(path).join("localstack-control-center");
-                if std::fs::create_dir_all(&dir).is_err() {
-                    return None;
-                }
-                Some(dir)
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            None
-        }
-    })
-    .clone()
-}
+///
+/// Phase 11C: implementation moved to [`paths::local_app_data_dir`]; this
+/// re-export preserves the exact existing call-site contract.
+pub(crate) use paths::local_app_data_dir;
 
 /// Log a typed subsystem failure (`error` level).
 pub(crate) fn error(subsystem: &str, message: &str) {
@@ -243,27 +320,6 @@ fn now_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
-}
-
-/// Install the panic hook (spec §X). Records panic message + location
-/// locally, then delegates to any previously installed hook. Never uploads
-/// anything and never attempts recovery — the process still unwinds normally.
-pub(crate) fn install_panic_hook() {
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let payload = info
-            .payload()
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "opaque panic payload".to_string());
-        let location = info
-            .location()
-            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-            .unwrap_or_else(|| "unknown location".to_string());
-        error("panic", &format!("{payload} at {location}"));
-        default_hook(info);
-    }));
 }
 
 #[cfg(test)]

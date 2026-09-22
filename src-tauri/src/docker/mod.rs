@@ -98,6 +98,29 @@ pub(crate) struct DockerEngineState {
 }
 
 impl DockerEngineState {
+    /// Read-only cached engine summary for the diagnostics deep-health
+    /// path (Phase 11C Task 14): no pipe query from the diagnostics side —
+    /// the existing lock is taken only to clone the last-known state.
+    #[allow(dead_code)] // consumed by diagnostics/commands.rs (Task 14)
+    pub(crate) fn cached_engine_status(&self) -> crate::diagnostics::health::EngineStatusSummary {
+        let Ok(inner) = self.inner.lock() else {
+            return crate::diagnostics::health::EngineStatusSummary {
+                available: false,
+                engine_version: None,
+            };
+        };
+        match &inner.last_snapshot {
+            Some(snap) => crate::diagnostics::health::EngineStatusSummary {
+                available: snap.available,
+                engine_version: snap.engine.as_ref().and_then(|e| e.version.clone()),
+            },
+            None => crate::diagnostics::health::EngineStatusSummary {
+                available: false,
+                engine_version: None,
+            },
+        }
+    }
+
     /// Build the real state (named-pipe transport). Called from `lib.rs`.
     pub(crate) fn real() -> Self {
         let transport: Arc<dyn Transport> =

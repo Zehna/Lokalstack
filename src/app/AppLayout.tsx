@@ -1,5 +1,3 @@
-import { useState } from 'react'
-
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Sidebar } from './components/Sidebar'
 import { NAV_ITEMS } from './navigation'
@@ -12,10 +10,13 @@ import { ProjectsPage } from '@/features/projects/ProjectsPage'
 import { ServicesPage } from '@/features/services/ServicesPage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { WorkspacesPage } from '@/features/workspaces/WorkspacesPage'
+import { DiagnosticsPage } from '@/features/diagnostics/DiagnosticsPage'
+import { useAppStore } from '@/stores/appStore'
 import type { ViewId } from '@/types/domain'
 
-/** Placeholder view registry — one component per navigation entry. */
+/** View registry — one component per navigation entry. */
 const VIEWS: Record<ViewId, () => React.ReactElement> = {
+  diagnostics: DiagnosticsPage,
   dashboard: DashboardPage,
   projects: ProjectsPage,
   services: ServicesPage,
@@ -28,12 +29,14 @@ const VIEWS: Record<ViewId, () => React.ReactElement> = {
 }
 
 /**
- * Desktop shell: left navigation plus the active placeholder view.
- * Phase 0 keeps the state local; it moves into Zustand when views need to
- * share data across features.
+ * Desktop shell: left navigation plus the active view. Phase 11C (§43-I):
+ * navigation state lives ONLY in `useAppStore` (single source of truth) —
+ * Sidebar, the ErrorBoundary dashboard reset, and store-driven navigation
+ * all share it. Navigation never waits for backend IPC (see appStore).
  */
 export function AppLayout() {
-  const [activeView, setActiveView] = useState<ViewId>('dashboard')
+  const activeView = useAppStore((state) => state.activeView)
+  const setActiveView = useAppStore((state) => state.setActiveView)
   const ActiveView = VIEWS[activeView]
   const activeLabel = NAV_ITEMS.find((item) => item.id === activeView)?.label ?? activeView
 

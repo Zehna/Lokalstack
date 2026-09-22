@@ -23,6 +23,9 @@ and manage your own dev services safely.
   services, and project association. No container lifecycle, no exec.
 - **Stay out of the way** — tray icon, close-to-tray, launch-minimized,
   opt-in Windows startup, single instance.
+- **Diagnose problems safely** — deep health checks, incident history, and
+  DPAPI-encrypted local support bundles with three privacy profiles for
+  sharing; local-only, redacted, no automatic upload.
 
 ## Windows requirements
 

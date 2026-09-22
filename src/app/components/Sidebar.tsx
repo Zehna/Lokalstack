@@ -1,6 +1,7 @@
 import type { LucideIcon } from 'lucide-react'
 
 import {
+  Activity,
   Boxes,
   Bot,
   Clock,
@@ -32,6 +33,7 @@ const NAV_ICONS: Record<ViewId, LucideIcon> = {
   docker: Container,
   history: Clock,
   settings: SettingsIcon,
+  diagnostics: Activity,
 }
 
 /**
