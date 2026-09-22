@@ -1,7 +1,7 @@
 {
   "name": "localstack-control-center",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Local development environment control center — see everything running on localhost.",
   "type": "module",
   "scripts": {

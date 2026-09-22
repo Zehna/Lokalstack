@@ -77,19 +77,48 @@ jobs:
         run: npm run tauri build
 
       - name: Collect artifacts
+        env:
+          EXPECTED_VERSION: 1.1.0
         run: |
           mkdir -p release-artifacts
           find src-tauri/target/release/bundle -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} release-artifacts/ \;
           cp src-tauri/target/release/localstack-control-center.exe release-artifacts/localstack-control-center-standalone.exe
-          sha256sum release-artifacts/* > release-artifacts/SHA256SUMS.txt
+          # Prefix-free manifest: three binaries, relative names (sha256sum -c
+          # runs from inside release-artifacts). Tmp+mv so the manifest can
+          # never include itself; a missing pattern fails sha256sum (non-zero).
+          ( cd release-artifacts && sha256sum -- *.exe *.msi ) > release-artifacts/SHA256SUMS.txt.tmp && mv release-artifacts/SHA256SUMS.txt.tmp release-artifacts/SHA256SUMS.txt
+          # Guard (§C): exactly the expected 1.1.0 installers, no duplicates,
+          # no stale other-version files, standalone + checksums present.
+          expected=(
+            "LocalStack Control Center_1.1.0_x64-setup.exe"
+            "LocalStack Control Center_1.1.0_x64_en-US.msi"
+            "localstack-control-center-standalone.exe"
+            "SHA256SUMS.txt"
+          )
+          fail=0
+          for f in "${expected[@]}"; do
+            if [ ! -f "release-artifacts/$f" ]; then
+              echo "MISSING expected artifact: $f"; fail=1
+            fi
+          done
+          # File count must match exactly (catches stale/duplicate/other-version files).
+          actual=$(find release-artifacts -maxdepth 1 -type f | wc -l)
+          if [ "$actual" -ne "${#expected[@]}" ]; then
+            echo "UNEXPECTED artifact set: found $actual files, expected ${#expected[@]}"; fail=1
+          fi
+          # Every installer filename must carry the expected version.
+          if ls release-artifacts | grep -Ev '^(LocalStack Control Center_1\.1\.0_x64-setup\.exe|LocalStack Control Center_1\.1\.0_x64_en-US\.msi|localstack-control-center-standalone\.exe|SHA256SUMS\.txt)$' | grep -q .; then
+            echo "UNEXPECTED or STALE artifact filenames detected"; fail=1
+          fi
           ls -la release-artifacts
+          exit $fail
 
       # Artifacts only (§J): downloadable from the workflow run for 14 days.
       # This does NOT create a GitHub Release and nothing becomes public.
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: localstack-control-center-1.0.1-rc
+          name: localstack-control-center-1.1.0-rc
           path: release-artifacts/
           retention-days: 14
           if-no-files-found: error
