@@ -5,7 +5,7 @@ current Windows).
 
 ## NSIS install (recommended)
 
-1. Run `LocalStack Control Center_1.0.1_x64-setup.exe`.
+1. Run `LocalStack Control Center_1.1.0_x64-setup.exe`.
 2. **Unsigned warning:** the release candidate is not code-signed, so
    SmartScreen may show "Windows protected your PC". Choose *More info →
    Run anyway* only if you obtained the binary from a trusted source.
@@ -14,7 +14,7 @@ current Windows).
 
 ## MSI install
 
-`LocalStack Control Center_1.0.1_x64_en-US.msi` is available as a secondary
+`LocalStack Control Center_1.1.0_x64_en-US.msi` is available as a secondary
 format. It installs per-machine policy to the same per-user path and shows a
 UAC elevation prompt. Silent installs (`/qn`) fail because elevation cannot
 be granted without UI; use `/passive` or the interactive wizard.
