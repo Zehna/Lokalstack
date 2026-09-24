@@ -42,10 +42,20 @@ pub struct ExportCapability {
     pub created_at_ms: u64,
 }
 
+/// Registry entry: a capability plus its exclusive-reveal state. `in_flight`
+/// reserves the capability so AT MOST ONE reveal attempt can own it at a
+/// time (Phase 11F-C.1 Finding A); the reservation is taken and released
+/// under the registry lock while the OS opener itself runs OUTSIDE it.
+#[derive(Debug, Clone)]
+struct CapabilityEntry {
+    cap: ExportCapability,
+    in_flight: bool,
+}
+
 /// Bounded, expiring, one-shot-after-successful-reveal capability registry.
 #[derive(Default)]
 pub struct ExportCapabilityStore {
-    inner: Mutex<VecDeque<ExportCapability>>,
+    inner: Mutex<VecDeque<CapabilityEntry>>,
     /// Test seam: unix-ms override for TTL/eviction determinism.
     pub now_ms_override: Mutex<Option<u64>>,
 }
@@ -79,46 +89,77 @@ impl ExportCapabilityStore {
             destination,
             created_at_ms: self.now(),
         };
-        q.push_back(cap.clone());
+        q.push_back(CapabilityEntry { cap: cap.clone(), in_flight: false });
         Some(cap)
     }
 
-    /// One-shot reveal: opener success CONSUMES the capability; opener failure
-    /// preserves it for retry until TTL/eviction. Expired/unknown → error.
+    /// One-shot reveal with EXCLUSIVE ownership (Phase 11F-C.1 Finding A):
+    ///
+    /// 1. under the lock: locate, reject unknown/expired, and atomically
+    ///    reserve the capability (`in_flight = true`);
+    /// 2. lock RELEASED — the OS opener never runs under the registry lock;
+    /// 3. on success the capability is consumed permanently; on failure the
+    ///    reservation is released and the capability stays retryable until
+    ///    TTL/eviction. A second simultaneous reveal of the same ID fails
+    ///    WITHOUT invoking its opener. `created_at_ms` is never touched by
+    ///    reveal, so TTL is never renewed; max-8 FIFO semantics unchanged.
     fn reveal_with_opener(
         &self,
         export_id: &str,
         opener: &dyn Fn(&Path) -> Result<(), String>,
     ) -> Result<(), ExportError> {
-        // Extract the entry under the lock, decide outside it.
-        let entry = {
+        // Phase 1 (under lock): validate + atomically reserve.
+        let destination = {
             let mut q = self.inner.lock().map_err(|_| ExportError::UnknownExport)?;
             let now = self.now();
-            let idx = q.iter().position(|c| c.export_id == export_id);
+            let idx = q.iter().position(|e| e.cap.export_id == export_id);
             let Some(idx) = idx else {
                 return Err(ExportError::UnknownExport);
             };
-            if now.saturating_sub(q[idx].created_at_ms) > EXPORT_TTL_MS {
+            if now.saturating_sub(q[idx].cap.created_at_ms) > EXPORT_TTL_MS {
+                // Expired entries are evicted on touch (even mid-reservation:
+                // an expired capability can never be revealed again).
                 q.remove(idx);
                 return Err(ExportError::UnknownExport);
             }
-            q[idx].clone()
-        };
+            if q[idx].in_flight {
+                // Exactly-one-owner invariant: the concurrent second reveal
+                // fails without invoking its opener.
+                return Err(ExportError::UnknownExport);
+            }
+            q[idx].in_flight = true;
+            q[idx].cap.destination.clone()
+        }; // lock released BEFORE the (slow, external) opener runs.
+
         // Reveal the parent folder of the trusted destination.
-        let parent = entry
-            .destination
+        let parent = destination
             .parent()
             .map(Path::to_path_buf)
-            .unwrap_or_else(|| entry.destination.clone());
-        match opener(&parent) {
+            .unwrap_or_else(|| destination.clone());
+        let opened = opener(&parent);
+
+        // Phase 2 (under lock): consume on success / release reservation on
+        // failure. Poisoned-lock failures here degrade conservatively: the
+        // reservation may linger, but every subsequent reveal attempt of the
+        // same ID fails closed and TTL/eviction still reaps the entry.
+        match opened {
             Ok(()) => {
                 // ONE-SHOT: remove immediately on success.
                 if let Ok(mut q) = self.inner.lock() {
-                    q.retain(|c| c.export_id != export_id);
+                    q.retain(|e| e.cap.export_id != export_id);
                 }
                 Ok(())
             }
-            Err(_) => Err(ExportError::UnknownExport), // retained for retry
+            Err(_) => {
+                // Opener failure: release the reservation so a later retry
+                // (while unexpired) succeeds. TTL is NOT renewed.
+                if let Ok(mut q) = self.inner.lock() {
+                    if let Some(e) = q.iter_mut().find(|e| e.cap.export_id == export_id) {
+                        e.in_flight = false;
+                    }
+                }
+                Err(ExportError::UnknownExport) // retained for retry
+            }
         }
     }
 }
@@ -626,6 +667,165 @@ mod tests {
         assert!(caps.reveal_with_opener(&cap.export_id, &|_| Err("opener down".into())).is_err());
         assert_eq!(caps.inner.lock().unwrap().len(), 1, "retained for retry");
         assert!(caps.reveal_with_opener(&cap.export_id, &|_| Ok(())).is_ok(), "retry succeeds");
+    }
+
+    /// Regression (Phase 11F-C.1 Finding A): two simultaneous reveals of the
+    /// SAME export_id must not both pass validation. Exactly one reveal may
+    /// own/reserve the capability; the concurrent second attempt fails
+    /// WITHOUT invoking its opener. Opener runs OUTSIDE the registry lock.
+    ///
+    /// Determinism: the loser thread waits on a channel until the winner's
+    /// opener has STARTED (which, under the reservation fix, proves the
+    /// winner owns the capability), then attempts the same ID. A Barrier
+    /// aligns both threads up front; the channel pins the ownership order so
+    /// the overlap is real on every run (a barrier alone leaves the order to
+    /// the scheduler).
+    #[test]
+    fn concurrent_reveals_of_same_id_are_exclusively_serialized() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let caps = Arc::new(ExportCapabilityStore::new());
+        let cap = caps
+            .register(std::path::PathBuf::from("C:\\tmp\\conc.zip"))
+            .expect("cap");
+        let opener_calls = Arc::new(AtomicUsize::new(0));
+        let loser_opener_ran = Arc::new(AtomicBool::new(false));
+        let results = Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
+        let barrier = Arc::new(Barrier::new(2));
+        let (winner_opened_tx, winner_opened_rx) = std::sync::mpsc::channel::<()>();
+
+        let caps_winner = Arc::clone(&caps);
+        let calls_winner = Arc::clone(&opener_calls);
+        let results_winner = Arc::clone(&results);
+        let barrier_winner = Arc::clone(&barrier);
+        let export_id = cap.export_id.clone();
+        let winner = std::thread::spawn(move || {
+            barrier_winner.wait();
+            let opener = move |_: &std::path::Path| -> Result<(), String> {
+                calls_winner.fetch_add(1, Ordering::SeqCst);
+                // Signal that this reveal OWNS the capability (reservation
+                // held / validation passed), then hold the opener open so the
+                // loser attempts the same ID while it is in flight.
+                let _ = winner_opened_tx.send(());
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                Ok(())
+            };
+            let ok = caps_winner.reveal_with_opener(&export_id, &opener).is_ok();
+            results_winner.lock().unwrap().push(ok);
+        });
+
+        let caps_loser = Arc::clone(&caps);
+        let calls_loser = Arc::clone(&opener_calls);
+        let loser_flag = Arc::clone(&loser_opener_ran);
+        let results_loser = Arc::clone(&results);
+        let barrier_loser = Arc::clone(&barrier);
+        let export_id_loser = cap.export_id.clone();
+        let loser = std::thread::spawn(move || {
+            barrier_loser.wait();
+            // Overlap point: reveal only once the winner provably entered
+            // its opener (owner established).
+            winner_opened_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("winner opener must start within 5s");
+            let opener = move |_: &std::path::Path| -> Result<(), String> {
+                calls_loser.fetch_add(1, Ordering::SeqCst);
+                loser_flag.store(true, Ordering::SeqCst);
+                Err("loser opener must never run".into())
+            };
+            let ok = caps_loser.reveal_with_opener(&export_id_loser, &opener).is_ok();
+            results_loser.lock().unwrap().push(ok);
+        });
+
+        winner.join().expect("winner reveal thread must not panic");
+        loser.join().expect("loser reveal thread must not panic");
+
+        let results = results.lock().unwrap().clone();
+        assert_eq!(
+            results.iter().filter(|ok| **ok).count(),
+            1,
+            "exactly ONE reveal succeeds: {results:?}"
+        );
+        assert_eq!(
+            results.iter().filter(|ok| !**ok).count(),
+            1,
+            "exactly ONE reveal fails: {results:?}"
+        );
+        assert_eq!(
+            opener_calls.load(Ordering::SeqCst),
+            1,
+            "opener must be invoked exactly ONCE across both concurrent reveals"
+        );
+        assert!(
+            !loser_opener_ran.load(Ordering::SeqCst),
+            "second simultaneous reveal must fail WITHOUT invoking its opener"
+        );
+        assert_eq!(
+            caps.inner.lock().unwrap().len(),
+            0,
+            "successful reveal consumes the capability"
+        );
+        assert!(
+            caps.reveal_with_opener(&cap.export_id, &|_| Ok(())).is_err(),
+            "consumed capability cannot be revealed again"
+        );
+    }
+
+    /// Finding A follow-up: a failed reveal must NOT renew/extend TTL. The
+    /// capability keeps its ORIGINAL created_at_ms, so once the 10-minute TTL
+    /// has passed, a later retry cannot resurrect it — and the expired entry
+    /// is evicted on touch.
+    #[test]
+    fn failed_reveal_does_not_renew_ttl_or_resurrect_expired_capability() {
+        let caps = ExportCapabilityStore::new();
+        let cap = caps.register(std::path::PathBuf::from("C:\\tmp\\ttl.zip")).unwrap();
+        assert!(caps.reveal_with_opener(&cap.export_id, &|_| Err("opener down".into())).is_err());
+        // Age the capability past TTL (failed reveal did not touch created_at_ms).
+        *caps.now_ms_override.lock().unwrap() = Some(cap.created_at_ms + EXPORT_TTL_MS + 1);
+        assert!(
+            matches!(
+                caps.reveal_with_opener(&cap.export_id, &|_| Ok(())),
+                Err(ExportError::UnknownExport)
+            ),
+            "expired capability must not be resurrected after a failed reveal"
+        );
+        assert_eq!(caps.inner.lock().unwrap().len(), 0, "expired entry evicted on touch");
+        *caps.now_ms_override.lock().unwrap() = None;
+    }
+
+    /// Finding A scoping: the exclusive reservation is PER CAPABILITY. Two
+    /// simultaneous reveals of DIFFERENT export_ids must both succeed — the
+    /// fix must not degenerate into a global single-flight gate.
+    #[test]
+    fn concurrent_reveals_of_different_ids_do_not_block_each_other() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let caps = Arc::new(ExportCapabilityStore::new());
+        let cap_a = caps.register(std::path::PathBuf::from("C:\\tmp\\a.zip")).unwrap();
+        let cap_b = caps.register(std::path::PathBuf::from("C:\\tmp\\b.zip")).unwrap();
+        let opener_calls = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(2));
+
+        let mut handles = Vec::new();
+        for cap in [cap_a, cap_b] {
+            let caps = Arc::clone(&caps);
+            let opener_calls = Arc::clone(&opener_calls);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let opener = move |_: &std::path::Path| -> Result<(), String> {
+                    opener_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                };
+                assert!(caps.reveal_with_opener(&cap.export_id, &opener).is_ok());
+            }));
+        }
+        for h in handles {
+            h.join().expect("reveal threads must not panic");
+        }
+        assert_eq!(opener_calls.load(Ordering::SeqCst), 2, "both distinct reveals ran their opener");
+        assert_eq!(caps.inner.lock().unwrap().len(), 0, "both capabilities consumed");
     }
 
     #[test]
