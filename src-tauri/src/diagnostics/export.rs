@@ -136,7 +136,17 @@ impl ExportCapabilityStore {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| destination.clone());
-        let opened = opener(&parent);
+        // The opener runs OUTSIDE the registry lock and is foreign code, so
+        // its panic is contained here (Phase 11F-C.2 review finding): a
+        // panicking opener must behave exactly like a failing one — release
+        // the reservation below and stay retryable — and must never unwind
+        // through reveal_with_opener. This is the ONLY foreign-call site
+        // between reserve and release; everything else in that window is
+        // panic-free std operations on owned data, so no RAII guard is
+        // needed for any additional reservation-leak path.
+        let opened =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| opener(&parent)))
+                .unwrap_or_else(|_| Err("opener panicked".to_string()));
 
         // Phase 2 (under lock): consume on success / release reservation on
         // failure. Poisoned-lock failures here degrade conservatively: the
@@ -667,6 +677,127 @@ mod tests {
         assert!(caps.reveal_with_opener(&cap.export_id, &|_| Err("opener down".into())).is_err());
         assert_eq!(caps.inner.lock().unwrap().len(), 1, "retained for retry");
         assert!(caps.reveal_with_opener(&cap.export_id, &|_| Ok(())).is_ok(), "retry succeeds");
+    }
+
+    /// Regression (Phase 11F-C.2 review finding): a PANICKING opener must not
+    /// leave the capability reserved in_flight forever. The panic must be
+    /// contained by reveal_with_opener, surface as an error, release the
+    /// reservation, and permit a later successful retry that consumes the
+    /// capability exactly once.
+    #[test]
+    fn panicking_opener_releases_reservation_and_fails_closed() {
+        let caps = ExportCapabilityStore::new();
+        let cap = caps.register(std::path::PathBuf::from("C:\\tmp\\panic.zip")).unwrap();
+        let opener = |_: &std::path::Path| -> Result<(), String> {
+            panic!("opener exploded");
+        };
+        // Containment check: the opener panic must NOT escape
+        // reveal_with_opener. Run under catch_unwind so a violation shows up
+        // as a clean test failure instead of an aborted test run.
+        let contained = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            caps.reveal_with_opener(&cap.export_id, &opener)
+        }));
+        assert!(
+            contained.is_ok(),
+            "opener panic must NOT escape reveal_with_opener"
+        );
+        let result = contained.expect("reveal returns a Result when the opener panics");
+        assert!(result.is_err(), "panicking opener must surface as an error");
+        assert_eq!(
+            caps.inner.lock().unwrap()[0].in_flight,
+            false,
+            "reservation must be released after the opener panic"
+        );
+        assert!(
+            caps.reveal_with_opener(&cap.export_id, &|_| Ok(())).is_ok(),
+            "retry after a panicking opener must succeed"
+        );
+        assert_eq!(caps.inner.lock().unwrap().len(), 0, "success consumes the capability");
+        assert!(
+            caps.reveal_with_opener(&cap.export_id, &|_| Ok(())).is_err(),
+            "one-shot: consumed capability cannot be revealed again"
+        );
+    }
+
+    /// Regression (Phase 11F-C.2 review finding): while a panicking opener is
+    /// in flight, a simultaneous reveal of the SAME id must still be refused
+    /// WITHOUT running its opener (the exclusive-owner invariant must hold
+    /// even across a panic), and after the panic the reservation must be
+    /// released so a later retry succeeds.
+    #[test]
+    fn panicking_opener_does_not_permit_simultaneous_second_opener() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let caps = Arc::new(ExportCapabilityStore::new());
+        let cap = caps.register(std::path::PathBuf::from("C:\\tmp\\panic2.zip")).unwrap();
+        let opener_calls = Arc::new(AtomicUsize::new(0));
+        let loser_opener_ran = Arc::new(AtomicBool::new(false));
+        let barrier = Arc::new(Barrier::new(2));
+        let (winner_started_tx, winner_started_rx) = std::sync::mpsc::channel::<()>();
+        let (loser_attempted_tx, loser_attempted_rx) = std::sync::mpsc::channel::<()>();
+
+        let caps_winner = Arc::clone(&caps);
+        let calls_winner = Arc::clone(&opener_calls);
+        let barrier_winner = Arc::clone(&barrier);
+        let export_id = cap.export_id.clone();
+        let winner = std::thread::spawn(move || {
+            barrier_winner.wait();
+            let opener = move |_: &std::path::Path| -> Result<(), String> {
+                calls_winner.fetch_add(1, Ordering::SeqCst);
+                // Own the window, let the loser attempt, THEN panic — so the
+                // loser's attempt lands while the capability is in flight.
+                let _ = winner_started_tx.send(());
+                let _ = loser_attempted_rx.recv_timeout(std::time::Duration::from_secs(5));
+                panic!("opener exploded after the loser attempted");
+            };
+            caps_winner.reveal_with_opener(&export_id, &opener)
+        });
+
+        let caps_loser = Arc::clone(&caps);
+        let calls_loser = Arc::clone(&opener_calls);
+        let loser_flag = Arc::clone(&loser_opener_ran);
+        let barrier_loser = Arc::clone(&barrier);
+        let export_id_loser = cap.export_id.clone();
+        let loser = std::thread::spawn(move || {
+            barrier_loser.wait();
+            winner_started_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("winner opener must start within 5s");
+            let opener = move |_: &std::path::Path| -> Result<(), String> {
+                calls_loser.fetch_add(1, Ordering::SeqCst);
+                loser_flag.store(true, Ordering::SeqCst);
+                Err("loser opener must never run".into())
+            };
+            let outcome = caps_loser.reveal_with_opener(&export_id_loser, &opener);
+            let _ = loser_attempted_tx.send(());
+            outcome.is_err()
+        });
+
+        let winner_result = winner.join().expect("winner thread must not propagate a panic");
+        let loser_failed = loser.join().expect("loser thread must not panic");
+
+        assert!(
+            winner_result.is_err(),
+            "panicking opener must surface as an error, not propagate"
+        );
+        assert!(loser_failed, "simultaneous same-ID reveal must fail while in flight");
+        assert_eq!(
+            opener_calls.load(Ordering::SeqCst),
+            1,
+            "only the owner's opener may run; the second opener must never be invoked"
+        );
+        assert!(
+            !loser_opener_ran.load(Ordering::SeqCst),
+            "second simultaneous reveal must fail WITHOUT invoking its opener"
+        );
+        // After the panic the reservation is released: retry succeeds and
+        // consumes the capability exactly once.
+        assert!(
+            caps.reveal_with_opener(&cap.export_id, &|_| Ok(())).is_ok(),
+            "retry after the panicking opener must succeed"
+        );
+        assert_eq!(caps.inner.lock().unwrap().len(), 0, "capability consumed by the retry");
     }
 
     /// Regression (Phase 11F-C.1 Finding A): two simultaneous reveals of the

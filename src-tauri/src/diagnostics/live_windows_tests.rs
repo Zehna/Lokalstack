@@ -164,7 +164,13 @@ mod live {
                 a.starts_with(std::env::temp_dir()) && b.starts_with(std::env::temp_dir()),
                 "owned paths live under the OS temp dir"
             );
-            if let Some(app_data) = crate::diagnostics::paths::local_app_data_dir() {
+            // Read-only derivation (Phase 11F-C.2 review finding): the
+            // production helper would CREATE the app-data directory on first
+            // use; this test must not materialize user directories. Derive
+            // the expected path from LOCALAPPDATA instead (same name the
+            // production resolver joins, without calling it).
+            if let Ok(local) = std::env::var("LOCALAPPDATA") {
+                let app_data = std::path::PathBuf::from(local).join("localstack-control-center");
                 assert!(
                     !a.starts_with(&app_data) && !b.starts_with(&app_data),
                     "owned paths must never be created under user app data"
